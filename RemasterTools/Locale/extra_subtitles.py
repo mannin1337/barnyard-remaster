@@ -22,21 +22,21 @@ def with_subs(data):
         (path, kind, value.lower() if isinstance(value, str) else value)
         for path, kind, value in source
     ]:
-        raise ValueError("A jelenet nem az SS hangbankot használja.")
+        raise ValueError("The scene does not reference the SS sound bank.")
     if any(path.lower() == "main/subs" for path, _, _ in source):
-        raise ValueError("A jelenetnek már van feliratkönyvtára.")
+        raise ValueError("The scene already has a subtitle library.")
     if trb.sym("Main") != (0, 0) or len(trb.sections) != 1 or trb.secinfo[0][:2] != (0, 0):
-        raise ValueError("Ismeretlen jelenet-TRB elrendezés.")
+        raise ValueError("Unrecognized scene TRB layout.")
 
     section = bytearray(trb.sections[0])
     old_array = trb.ptr(0, 4)
     count = locale.u32(section, 8)
     if not old_array or old_array[0] != 0 or count > 1000:
-        raise ValueError("Sérült Main tulajdonságtömb.")
+        raise ValueError("Invalid Main property array.")
     old_start = old_array[1]
     old_end = old_start + 8 * count
     if old_end > len(section):
-        raise ValueError("Sérült Main tulajdonságméret.")
+        raise ValueError("The Main property array exceeds its section.")
     relocs = list(trb.relocs)
 
     def append(payload):
@@ -61,7 +61,7 @@ def with_subs(data):
     output = locale.build_trb([bytes(section)], relocs, symbols, trb.version)
     expected = source + [("Main/Subs", "String", LIBRARY)]
     if locale.pb_leaves(locale.TRB(output)) != expected:
-        raise ValueError("A jelenet visszaolvasásánál eltértek a tulajdonságok.")
+        raise ValueError("Scene properties changed when the generated TRB was read back.")
     return output
 
 
@@ -84,23 +84,23 @@ def main():
     transcript = json.loads(args.transcript.read_text(encoding="utf-8"))
     transcript.pop("ss01a", None)  # Already subtitled control.
     if len(transcript) != 38:
-        raise ValueError("A teljes 38 sávos leltár szükséges.")
+        raise ValueError("The track list must contain all 38 tracks.")
     reviewed = json.loads(args.review.read_text(encoding="utf-8"))
     en, hu, files = [], [], {}
     for symbol, record in reviewed.items():
         track = transcript[symbol]
         if not track["peak"] or not record["cues"]:
-            raise ValueError(f"Néma vagy üres felirat: {symbol}")
+            raise ValueError(f"Silent track or missing subtitle cues: {symbol}")
         filename = Path(record["asset"])
         if filename.name != str(filename) or filename.suffix != ".trb":
-            raise ValueError(f"Érvénytelen jelenetnév: {filename}")
+            raise ValueError(f"Invalid scene filename: {filename}")
         previous_end = 0
         english, hungarian = [], []
         for start, end, en_text, hu_text in record["cues"]:
             if not previous_end <= start < end <= track["duration_ms"]:
-                raise ValueError(f"Felirat-időhiba: {symbol} {start}–{end}")
+                raise ValueError(f"Invalid subtitle timing: {symbol} {start}–{end}")
             if any(not text.strip() or "\0" in text for text in (en_text, hu_text)):
-                raise ValueError(f"Hiányzó feliratszöveg: {symbol}")
+                raise ValueError(f"Missing or invalid subtitle text: {symbol}")
             english.append((start, end, en_text))
             hungarian.append((start, end, hu_text))
             previous_end = end
@@ -117,10 +117,10 @@ def main():
     for language, entries in sorted(languages.items()):
         contents = locale.build_subs(0x100, entries)
         if locale.parse_subs(locale.TRB(contents)) != (0x100, entries):
-            raise ValueError(f"TRB visszaolvasás: {language}")
+            raise ValueError(f"Generated subtitle TRB failed verification: {language}")
         for symbol, rows in entries:
             if locale.engine_subtitle(contents, symbol) != rows:
-                raise ValueError(f"Motor-emulációs eltérés: {symbol} ({language})")
+                raise ValueError(f"The game would read different subtitle cues: {symbol} ({language})")
         files[Path("Subs") / language / (LIBRARY + ".trb")] = contents
 
     write_output(args.out, {Path("Data") / name: value for name, value in files.items()})

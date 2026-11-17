@@ -1479,7 +1479,7 @@ def main(argv=None):
     p.add_argument('--show', type=int, default=8, help='examples per problem kind')
     p.add_argument('--report', help='also write the result as json')
     p = sp.add_parser('roundtrip', help='English through en_strings.json + import -> compare with the retail files')
-    p.add_argument('--keep', action='store_true', help='keep forditas\\roundtrip\\en_as_translation.json')
+    p.add_argument('--keep', action='store_true', help='keep roundtrip/en_as_translation.json in the working directory')
     args = ap.parse_args(argv)
     return {'export': cmd_export, 'import': cmd_import, 'pseudo': cmd_pseudo, 'check': cmd_check, 'roundtrip': cmd_roundtrip}[args.cmd](args)
 

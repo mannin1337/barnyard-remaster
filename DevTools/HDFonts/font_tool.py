@@ -14,7 +14,7 @@ Python 3.10+ and Pillow, nothing else.
     specimen    every code point of every font as the game draws it -> specimen_<font>.png
     composites  the draw-time composites (solution a): composites.json + the C++ tables in composites_cpp.txt
     mockups     the solutions drawn with the engine's own layout rules -> mockup_*.png, closeup_*.png
-    context     solution a in a 1080p frame capture of the game (--frame <png>) -> kontextus_1080p_hd.png
+    context     solution a in a 1080p frame capture of the game (--frame <png>) -> context_1080p_hd.png
 
 Nothing is written outside --out; the game files are only read, each once, by 'extract'.
 
@@ -728,11 +728,11 @@ def umlaut_sub(s):
 def modes_for(f, specs, offline):
     fix = REMAP_FIX.get(f.name, {})
     return [
-        ("Most: a hiányzó betű kimarad" + (", Ó/Ö rossz cellából" if fix else ""), {}, None),
-        ("Csak betűcsere a szövegben: ő→ö, ű→ü", {"remap": fix}, umlaut_sub),
-        ("Csak betűcsere a szövegben: ő→õ, ű→û (Latin-1)", {"remap": fix}, latin1_sub),
-        ("(a) rajzoláskor összerakva: alapbetű + 2 ékezet az atlaszból", {"remap": fix, "composites": specs}, None),
-        ("(b) új betű az atlaszban (előre összerakva)", {"remap": fix, "composites": specs, "images": offline}, None),
+        ("Original: missing letters skipped" + (", Ó/Ö use the wrong cells" if fix else ""), {}, None),
+        ("Umlaut substitution: ő→ö, ű→ü", {"remap": fix}, umlaut_sub),
+        ("Latin-1 substitution: ő→õ, ű→û", {"remap": fix}, latin1_sub),
+        ("(a) Draw-time composite: base letter and two accents", {"remap": fix, "composites": specs}, None),
+        ("(b) Precomposed letter in the atlas", {"remap": fix, "composites": specs, "images": offline}, None),
     ]
 
 
@@ -771,7 +771,7 @@ def cmd_mockups(a):
             for y in range(sheet.height):
                 t = y / max(1, sheet.height - 1)
                 d.line([(0, y), (width, y)], fill=(int(58 - 20 * t), int(44 - 4 * t), int(36 + 30 * t), 255))
-            d.text((10, 8), "%s - %s atlasz, 2x (kb. 1080p), a játék saját elrendezési szabályaival" % (f.name, "HD 2x" if hd else "eredeti"),
+            d.text((10, 8), "%s - %s atlas at 2x (about 1080p), using the game's text layout" % (f.name, "HD 2x" if hd else "original"),
                    fill=(240, 240, 240), font=ui_font(16, True))
             for r, (label, imgs) in enumerate(rows):
                 y = 40 + r * row_h
@@ -794,13 +794,13 @@ def cmd_mockups(a):
                 for ref in ("Ö", "Ó") if cp in (0x150,) else ("ö", "ó") if cp == 0x151 else ("Ü", "Ú") if cp == 0x170 else ("ü", "ú"):
                     q, _ = glyph_quads(f, ord(ref), 0, {"remap": REMAP_FIX.get(f.name, {})})
                     im, _ = render_quads(f, q, 1 if not hd else 2)
-                    tiles.append((ref + " eredeti", im.resize((im.width * z // (1 if not hd else 2), im.height * z // (1 if not hd else 2)), Image.NEAREST)))
+                    tiles.append((ref + " original", im.resize((im.width * z // (1 if not hd else 2), im.height * z // (1 if not hd else 2)), Image.NEAREST)))
             tw = max(t[1].width for t in tiles) + 16
             th = max(t[1].height for t in tiles) + 30
             cols = 4
             cs = Image.new("RGBA", (cols * tw, ((len(tiles) + cols - 1) // cols) * th + 30), (30, 30, 36, 255))
             dd = ImageDraw.Draw(cs)
-            dd.text((6, 6), "%s %s: (a) rajzoláskor összerakva | (b) előre összerakva | az eredeti ékezetes betűk, %dx" % (f.name, "HD" if hd else "SD", z),
+            dd.text((6, 6), "%s %s: (a) Draw-time composite | (b) Precomposed | Original accented letters, %dx" % (f.name, "HD" if hd else "SD", z),
                     fill=(235, 235, 235), font=ui_font(13))
             for i, (lab, im) in enumerate(tiles):
                 x0, y0 = (i % cols) * tw + 8, (i // cols) * th + 30
@@ -836,7 +836,7 @@ def cmd_context(a):
             quads, width = line_quads(f, text, mode)
             x = (root_w - width) / 2.0  # TextAlign_Center inside the box
             render_quads(f, quads, scale, colour, canvas=bg, origin=(x * scale, (top + i * adv) * scale))
-    p = os.path.join(a.out, "kontextus_1080p_hd.png")
+    p = os.path.join(a.out, "context_1080p_hd.png")
     bg.convert("RGB").save(p)
     log("wrote", p)
     return 0

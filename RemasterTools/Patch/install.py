@@ -194,6 +194,7 @@ def main():
         if stage.exists():
             shutil.rmtree(stage)
     print("Installed:", args.output)
+    print("Windows launchers: Play_Barnyard.bat, Host_LAN.bat, Join_LAN.bat")
     print("Executable:", args.output / "OpenBarnyard" / "OpenBarnyard.exe")
     print("Working directory:", args.output)
 

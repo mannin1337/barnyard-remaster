@@ -33,9 +33,9 @@ def main():
         return ("@echo off\r\ncd /d \"%~dp0\"\r\n" + body + "\r\n").encode("ascii")
     program = {
         "OpenBarnyard/OpenBarnyard.exe": exe,
-        "Barnyard_inditas.bat": bat('start "" "OpenBarnyard\\OpenBarnyard.exe" %*'),
-        "Barnyard_LAN_szerver.bat": bat('start "" "OpenBarnyard\\OpenBarnyard.exe" -nopause -nethost %*'),
-        "Barnyard_LAN_csatlakozas.bat": bat('start "" "%~dp0OpenBarnyard\\OpenBarnyard.exe" -nopause -netjoin %*'),
+        "Play_Barnyard.bat": bat('start "" "OpenBarnyard\\OpenBarnyard.exe" %*'),
+        "Host_LAN.bat": bat('start "" "OpenBarnyard\\OpenBarnyard.exe" -nopause -nethost %*'),
+        "Join_LAN.bat": bat('start "" "%~dp0OpenBarnyard\\OpenBarnyard.exe" -nopause -netjoin %*'),
     }
     approved = json.loads((HERE/"shader-hashes.json").read_text(encoding="utf-8"))
     for name, expected in approved.items():

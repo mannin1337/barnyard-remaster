@@ -1,53 +1,68 @@
-# A v5.5 forráskiadás fordítása
+# Build Barnyard Remaster from source
 
-A támogatott kiadási cél a 32 bites Windows-program Direct3D 11-gyel. SteamOS-on ez a program fut Proton alatt.
+Build the game on Windows for **Win32 / Release / Direct3D 11**. The resulting executable also runs through Proton on SteamOS. To play the published version with a friend, start with the [installation and co-op guide](RemasterTools/Patch/INSTALL.md).
 
-## Windows
+## Prepare the build tools
 
-1. Telepíts Python 3.10 vagy újabb verziót és Visual Studio 2022-t, illetve a Build Tools változatát. Válaszd a C++ asztali fejlesztési csomagot, az x86/x64 MSVC v143 fordítót és a Windows SDK-t. [Python](https://www.python.org/downloads/windows/) · [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-2. Készítsd elő a saját, jogosultan használt régi PC-s fejlesztőkészleteidet. A közös könyvtáruk alatt az alábbi szerkezetet várja a fordító. A verziószámok a kiadáshoz használt fejlécek verziószámai. A hivatkozások a tulajdonosok termékoldalai. [Firelight FMOD](https://www.fmod.com/download) · [RAD Bink](https://www.radgametools.com/bnkmain.htm)
+Install Git, Python 3.10 or later and either Visual Studio 2022 or Build Tools for Visual Studio 2022. In Visual Studio Installer, select **Desktop development with C++**, **MSVC v143 x86/x64 build tools**, and a **Windows SDK**. [Git for Windows](https://git-scm.com/downloads/win) · [Python for Windows](https://www.python.org/downloads/windows/) · [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+
+Provide your licensed legacy FMOD and Bink development kits in a single SDK directory. The release build used FMOD 3.74 and Bink 1.9c. Keep the complete header sets together with the 32-bit import libraries. The paths below are relative to the directory you will pass to the build script. [FMOD](https://www.fmod.com/download) · [RAD Bink](https://www.radgametools.com/bnkmain.htm)
 
 ```text
-<SDK-mappa>/
-  fmod/include/fmod/fmod.h      FMOD 3.74
+BarnyardSDK/
+  fmod/include/fmod/fmod.h
   fmod/lib/x86/fmodvc.lib
-  bink/include/bink.h           Bink 1.9c
+  bink/include/bink.h
   bink/include/radbase.h
   bink/lib/x86/binkw32.lib
 ```
 
-3. A repó gyökeréből indítsd el a fordítást PowerShellben.
+## Build and run
+
+Clone the source, then run the build from the repository root in PowerShell. Replace the SDK path with your own.
 
 ```powershell
-.\Build-Remaster.ps1 -LegacySdkRoot 'sajat-sdk-mappa'
+git clone https://github.com/mannin1337/barnyard-remaster.git
+cd barnyard-remaster
+.\Build-Remaster.ps1 -LegacySdkRoot 'C:\SDK\BarnyardSDK'
 ```
 
-A szkript az upstream commitból előkészíti a függőségeket, minden fájlhoz ellenőrzi a Git blobazonosítót, majd létrehozza az `OpenBarnyard.sln` megoldást. Egyszerre legfeljebb két fordítószálat használ. Az EXE a `bin/Release_Win32_x86_DX11/OpenBarnyard/OpenBarnyard.exe` útvonalra kerül. Futtatásához az eredeti PC-játék adatai és a hozzájuk tartozó futásidejű könyvtárak szükségesek.
+The script fetches the other build dependencies from a pinned OpenBarnyard revision, checks their Git blob IDs, generates `OpenBarnyard.sln` with Premake, and compiles the game with up to two compiler processes. The executable is **`bin/Release_Win32_x86_DX11/OpenBarnyard/OpenBarnyard.exe`**. To try it, create a separate playable installation from your original PC game using the patch, replace `OpenBarnyard/OpenBarnyard.exe` in that installation with your build, and run the launcher at its root. [Installation guide](RemasterTools/Patch/INSTALL.md)
 
-A `BARNYARD_LEGACY_SDK` környezeti változóval is megadható az SDK-k mappája. A `-ConfigureOnly` csak a projektgenerálásig fut. Az opcionális `-UpstreamDirectory 'sajat-upstream-git-mappa'` egy meglévő helyi Git-klónból tölti be a rögzített fájlokat, így offline is lehet fordítani. A klón objektumtárának tartalmaznia kell a rögzített commitot. [Upstream revízió](https://github.com/InfiniteC0re/OpenBarnyard/tree/f359e963c9256c608951b863a16c2eefaa352823)
-
-## Magyar szövegek és feliratok
-
-```powershell
-py -3 -X utf8 -B RemasterTools/Locale/build_hungarian.py --data 'sajat-jatek/Data' --out 'magyar-kimenet'
-```
-
-A kimenethez adj új mappanevet. A program a magyar forrásszövegekből, a v5.5 felületének kiegészítéseiből és a feliratok időzítéséből elkészíti a `Data/Locale`, `Data/Subs` és `Data/ScriptedSequence` megfelelő fájljait. Az eredeti fájlokból a saját játéktelepítést olvassa.
-
-A HD textúrák eszköze a `RemasterTools/Textures/hd_textures.py`. A betűkészletek elemzését és a már mellékelt karakterelhelyezési tábla előállítását a `DevTools/HDFonts/font_tool.py` és `gen_layout.py` végzi. Mindkét képfeldolgozó eszköz Pillow-t használ. A táblagenerátorhoz NumPy, SciPy és fontTools is kell. A TTF-et és a képi bemeneteket a fejlesztő adja meg. A kész tábla a motorral együtt fordul.
-
-## Eredet és licencek
-
-A Toshi és a 2006-os játék eredeti fejlesztője a Blue Tongue Entertainment. A Toshi jelenlegi jogosultjaként az upstream licenc a THQ Nordicot nevezi meg. Az OpenBarnyard dekompiláció szerzői AdventureT és InfiniteC0re. A módosított forrásra az eredeti projekt nem kereskedelmi licencfeltételei vonatkoznak. [Eredeti licenc](License.md) · [Upstream projektleírás](README.upstream.md) · [OpenBarnyard](https://github.com/InfiniteC0re/OpenBarnyard)
-
-| Összetevő | Eredet és felhasználási feltételek |
+| Build option | When to use it |
 |---|---|
-| Premake | Projektgenerátor. [Projekt](https://github.com/premake/premake-core) · [Mellékelt licenc](Vendor/premake/LICENSE.txt) |
-| PooledStrings | Az OpenBarnyard C# kódgenerátora. [Forráskód](DevTools/PooledStrings/PooledStrings.cs) · [Upstream licenc](License.md) |
-| Dear ImGui | Omar Cornut és a közreműködők. [Projekt](https://github.com/ocornut/imgui) · [MIT licenc](BuildTools/licenses/Dear-ImGui.txt) |
-| DirectXTex | Microsoft. [Projekt](https://github.com/microsoft/DirectXTex) · [MIT licenc](BuildTools/licenses/DirectXTex.txt) |
-| MinHook | Tsuda Kageyu és a közreműködők. [Projekt](https://github.com/TsudaKageyu/minhook) · [A használt verzió licence](https://github.com/InfiniteC0re/OpenBarnyard/blob/f359e963c9256c608951b863a16c2eefaa352823/Toshi/Vendor/minhook/LICENSE.txt) |
-| OPCODE 1.3 | Pierre Terdiman ütközésvizsgáló könyvtára. [A szerző kiadása és felhasználási engedélye](https://www.codercorner.com/Opcode.htm) |
-| stb_image és stb_image_write | Sean Barrett és a közreműködők. A feltételek a letöltött fejlécek végén szerepelnek. [Projekt](https://github.com/nothings/stb) |
+| `-ConfigureOnly` | Generate the Visual Studio solution. Open it, select **Release / Win32**, and build the **OpenBarnyard** project. |
+| `-UpstreamDirectory 'C:\Source\OpenBarnyard'` | Use a local upstream Git clone for an offline build. Its object database must contain the pinned revision. [Pinned upstream revision](https://github.com/InfiniteC0re/OpenBarnyard/tree/f359e963c9256c608951b863a16c2eefaa352823) |
+| `BARNYARD_LEGACY_SDK` | Set this environment variable to the SDK directory to reuse it across builds without passing `-LegacySdkRoot` each time. |
 
-A Windows SDK-t és az MSVC-t a Microsoft telepítője biztosítja. A Bink és az FMOD a fejlesztő által megadott SDK-mappából érhető el. A letöltött nyilvános függőségek fájlneve és rögzített azonosítója is megtalálható a jegyzékben. [Függőségi jegyzék](BuildTools/upstream-files.json)
+To exercise the LAN input and spectator code separately, use the four standalone [netplay regression tests](Tools/tests/netplay/README.md).
+
+## Optional Hungarian text and subtitles
+
+The release installer already builds these files from the player's copy of the game. To rebuild them separately, run the following from the repository root. Pass the original game's **Data** directory and a **new** output directory outside it.
+
+```powershell
+py -3 -X utf8 -B RemasterTools/Locale/build_hungarian.py --data 'C:\Games\Barnyard\Data' --out 'C:\Games\Barnyard-Hungarian'
+```
+
+The tool combines the Hungarian source strings, interface additions and subtitle timings with local game data. The output contains the translated files under `Data/Locale`, `Data/Subs` and `Data/ScriptedSequence`. Players can select **Magyar** under **Options → Language** in the main menu.
+
+## Textures and fonts
+
+For release-style textures, use the [HD texture builder](Tools/hd/README.md). The separate texture utility is `RemasterTools/Textures/hd_textures.py`. The font analysis and layout tools are `DevTools/HDFonts/font_tool.py` and `DevTools/HDFonts/gen_layout.py`. They use Pillow, and the layout generator also needs NumPy, SciPy and fontTools. Generating a new layout requires your own TTF and image inputs. The engine compiles the supplied layout table during a normal build.
+
+## Credits and licenses
+
+Blue Tongue Entertainment developed the original 2006 game and TOSHI engine. The upstream license identifies THQ Nordic as the current owner of TOSHI. AdventureT and InfiniteC0re created the OpenBarnyard decompilation. Its non-commercial license applies to the modified source. [Original license](License.md) · [Upstream README](README.upstream.md) · [OpenBarnyard](https://github.com/InfiniteC0re/OpenBarnyard)
+
+| Component | Credit and license |
+|---|---|
+| Premake | Project generator. [Project](https://github.com/premake/premake-core) · [Bundled license](Vendor/premake/LICENSE.txt) |
+| PooledStrings | OpenBarnyard's C# code generator. [Source](DevTools/PooledStrings/PooledStrings.cs) · [Upstream license](License.md) |
+| Dear ImGui | Omar Cornut and contributors. [Project](https://github.com/ocornut/imgui) · [MIT license](BuildTools/licenses/Dear-ImGui.txt) |
+| DirectXTex | Microsoft. [Project](https://github.com/microsoft/DirectXTex) · [MIT license](BuildTools/licenses/DirectXTex.txt) |
+| MinHook | Tsuda Kageyu and contributors. [Project](https://github.com/TsudaKageyu/minhook) · [License for the pinned version](https://github.com/InfiniteC0re/OpenBarnyard/blob/f359e963c9256c608951b863a16c2eefaa352823/Toshi/Vendor/minhook/LICENSE.txt) |
+| OPCODE 1.3 | Pierre Terdiman's collision detection library. [Author's distribution and terms](https://www.codercorner.com/Opcode.htm) |
+| stb_image and stb_image_write | Sean Barrett and contributors. The license text is at the end of the downloaded headers. [Project](https://github.com/nothings/stb) |
+
+The Microsoft installer supplies MSVC and the Windows SDK. Bink and FMOD are read from the developer's SDK directory. The public dependency manifest lists the path and pinned ID of each file the build downloads. [Dependency manifest](BuildTools/upstream-files.json)

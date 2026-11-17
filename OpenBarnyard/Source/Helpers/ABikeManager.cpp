@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ABikeManager.h"
 #include "MiniGame/ABikeRaceMicroGame.h"
+#include "Player/ACoopMinigame.h"
 #include "Animation/AAnimatableObjectManager.h"
 #include "Assets/AAssetLoader.h"
 #include "Assets/AKeyFrameLibraryManager.h"
@@ -173,6 +174,26 @@ static TBOOL IsBikeRaceRunning()
 	return AGameStateController::GetSingleton()->GetCurrentState()->IsA( &TGetClass( ABikeRaceMicroGame ) );
 }
 
+static void StartMountedBike( ABikeSteer* steer )
+{
+	steer->Start();
+	AGameState* state = AGameStateController::GetSingleton()->GetCurrentState();
+	if ( state && state->IsA( &TGetClass( ABikeRaceMicroGame ) ) )
+	{
+		auto* race = TSTATICCAST( ABikeRaceMicroGame, state );
+		if ( race->GetElapsedTime() > 0.0f && ACoopMinigame::IsScoreDuel( race ) )
+		{
+			// UpdatePlayerFall already restarted this bike. The later mount
+			// completion must let gravity bring its wheels back to the track.
+			const TVector4& pos = *steer->GetPosition();
+			TINFO( "[coopmini] bike remount completed t=%.2f pos=(%.3f,%.3f,%.3f) frozen=%d\n",
+			       race->GetElapsedTime(), pos.x, pos.y, pos.z, steer->GetPhysics()->m_bFrozen );
+			return;
+		}
+	}
+	steer->GetPhysics()->SetFrozen( TTRUE );
+}
+
 // $Barnyard: FUNCTION 00542eb0
 TBOOL ABikeManager::OnUpdate( TFLOAT a_fDeltaTime )
 {
@@ -217,8 +238,7 @@ TBOOL ABikeManager::OnUpdate( TFLOAT a_fDeltaTime )
 				pSteer->SetDirection( m_vecRackDirection );
 
 				m_eState = STATE_RIDING;
-				pSteer->Start();
-				pSteer->GetPhysics()->SetFrozen( TTRUE );
+				StartMountedBike( pSteer );
 				pPlayerBikeObject->PlayAnimation( TPS8( bk_ftdn ) );
 				pPlayerBikeObject->Update( 0.0f );
 				AttachRideCamera( 0.5f );
@@ -314,8 +334,7 @@ TBOOL ABikeManager::OnUpdate( TFLOAT a_fDeltaTime )
 				break;
 
 			m_eState = STATE_RIDING;
-			pSteer->Start();
-			pSteer->GetPhysics()->SetFrozen( TTRUE );
+			StartMountedBike( pSteer );
 			pPlayerBikeObject->PlayAnimation( TPS8( bk_ftdn ) );
 
 			// The units of the bike and of the rider aren't used during the ride

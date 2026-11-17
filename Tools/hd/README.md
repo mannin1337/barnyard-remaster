@@ -39,4 +39,6 @@ Az összesítésben a `Release SHA-256 matches` a teljes fájlra egyező v5.5-te
 
 A korábbi kiadás megőrzött 4× nagyításait használva mind az 1864 textúra teljes DDS-fájlja egyezett a v5.5-ös kiadás SHA-256 értékével. A CPU-s nagyítással az 54 egyedi textúra átlagos RGB-eltérése képenként átlagolva 2,30 volt a 0–255-ös skálán. Az átlátszóság ezen az 54 képen mindenütt egyezett.
 
+Az eredeti textúrából indított külön GPU-próbán az első 600 teljes DDS-ből 599 bájtra egyezett a v5.5 kiadással. Az egy eltérő kép pixelkülönbségéről nincs mérés.
+
 Ugyanazzal a paranccsal folytathatod a megszakadt építést. A program az egyező fájlokat átugorja. A saját helyi változatait a célmappa `.barnyard-hd.json` állományában tartja nyilván. A CPU-s változatról később átválthatsz a GPU-s építésre. Ha egy céltextúrát egy másik mod vagy a felhasználó módosított, az építő megőrzi, megadja az útvonalát és megáll.

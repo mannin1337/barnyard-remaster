@@ -1,0 +1,103 @@
+#include "pch.h"
+#include "ADisplayModes_Win.h"
+
+#include <Render/TBackend.h>
+
+//-----------------------------------------------------------------------------
+// Enables memory debugging.
+// Note: Should be the last include!
+//-----------------------------------------------------------------------------
+#include <Core/TMemoryDebugOn.h>
+
+TOSHI_NAMESPACE_USING
+
+// NOTE: GetClass 00614c20, CreateObject 00614c80, CreateObjectInPlace 00614d00
+TDEFINE_CLASS( ADisplayModes_Win );
+
+// $Barnyard: FUNCTION 00614c30
+// $Barnyard: FUNCTION 00614c60
+ADisplayModes_Win::~ADisplayModes_Win()
+{
+}
+
+// $Barnyard: FUNCTION 00614e00
+void ADisplayModes_Win::Initialise()
+{
+	auto pRenderer    = TSTATICCAST( TRenderInterfaceHAL, TRenderInterface::GetSingleton() );
+	auto pAdapterList = pRenderer->GetAdapterList();
+
+	T2_FOREACH( *pAdapterList, pAdapter )
+	{
+		auto uiNumSupportedDevices = pAdapter->GetNumSupportedDevices();
+		auto pModeList             = pAdapter->GetModeList();
+
+		T2_FOREACH( *pModeList, pMode )
+		{
+			for ( TUINT32 i = 0; i < uiNumSupportedDevices; i++ )
+			{
+				auto pDevice = pMode->GetDevice( i );
+
+				if ( !pDevice->IsSoftware() )
+				{
+					if ( !pDevice->GetMode()->Is32Bit() && !pDevice->GetMode()->Is16Bit() )
+					{
+						continue;
+					}
+
+					auto uiWidth  = pDevice->GetMode()->GetWidth();
+					auto uiHeight = pDevice->GetMode()->GetHeight();
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+					{
+						if ( 640 <= uiWidth && 480 <= uiHeight )
+#else
+					if ( uiWidth == ( uiHeight / 3 ) * 4 ||  // 4:3
+					     uiHeight == ( uiWidth / 3 ) * 4 ||  // 4:3
+					     uiWidth == ( uiHeight / 4 ) * 5 ||  // 5:4
+					     uiWidth == ( uiHeight / 5 ) * 4 ||  // 4:5
+					     uiWidth == ( uiHeight / 9 ) * 16 || // 16:9
+					     uiWidth == ( uiHeight / 10 ) * 16 ) // 16:10
+					{
+						if ( ( 640 <= uiWidth && 480 <= uiHeight ) ||   // 4:3
+						     ( 1280 <= uiWidth && 1024 <= uiHeight ) || // 5:4
+						     ( 1024 <= uiWidth && 1280 <= uiHeight ) || // 4:5
+						     ( 1280 <= uiWidth && 720 <= uiHeight ) ||  // 16:9
+						     ( 1440 <= uiWidth && 900 <= uiHeight ) )   // 16:10
+#endif // BARNYARD_COMMUNITY_PATCH
+						{
+							if ( pDevice->GetMode()->Is16Bit() )
+							{
+								if ( !DoesModeExist( uiWidth, uiHeight, 16 ) )
+								{
+									m_Modes.PushBack( { .m_uiWidth = uiWidth, .m_uiHeight = uiHeight, .m_uiColourDepth = 16 } );
+								}
+							}
+
+							if ( pDevice->GetMode()->Is32Bit() )
+							{
+								if ( !DoesModeExist( uiWidth, uiHeight, 32 ) )
+								{
+									m_Modes.PushBack( { .m_uiWidth = uiWidth, .m_uiHeight = uiHeight, .m_uiColourDepth = 32 } );
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// $Barnyard: FUNCTION 00614d70
+TBOOL ADisplayModes_Win::DoesModeExist( const TUINT32& a_rWidth, const TUINT32& a_rHeight, const TUINT32& a_rColourDepth )
+{
+	T2_FOREACH( m_Modes, it )
+	{
+		if ( it->m_uiWidth == a_rWidth && it->m_uiHeight == a_rHeight && it->m_uiColourDepth == a_rColourDepth )
+		{
+			return TTRUE;
+		}
+	}
+
+	return TFALSE;
+}

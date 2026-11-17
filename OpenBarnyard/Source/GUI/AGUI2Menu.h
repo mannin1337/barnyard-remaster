@@ -1,0 +1,159 @@
+#pragma once
+#include "Input/AInputMap.h"
+#include "Sound/ASound.h"
+
+#include <GUI/T2GUIElement.h>
+
+class AGUI2MenuItem;
+
+class AGUI2Menu : public Toshi::T2GUIElement
+{
+public:
+	using ACTIONFLAGS = TUINT32;
+	enum ACTIONFLAGS_ : ACTIONFLAGS
+	{
+		ACTIONFLAGS_NONE   = 0,
+		ACTIONFLAGS_UP     = BITFLAG( 0 ),
+		ACTIONFLAGS_DOWN   = BITFLAG( 1 ),
+		ACTIONFLAGS_LEFT   = BITFLAG( 2 ),
+		ACTIONFLAGS_RIGHT  = BITFLAG( 3 ),
+		ACTIONFLAGS_OK     = BITFLAG( 4 ),
+		ACTIONFLAGS_CANCEL = BITFLAG( 5 ),
+	};
+
+	using ActivateCallback = void ( * )( void* a_pUserData, AGUI2MenuItem* a_pItem );
+	using FocusCallback    = void ( * )( void* a_pUserData, AGUI2MenuItem* a_pOldFocus, AGUI2MenuItem* a_pNewFocus );
+
+public:
+	// constructors/destructor
+	AGUI2Menu();
+	~AGUI2Menu();
+
+	void  Update( TFLOAT a_fDeltaTime );
+	TBOOL ProcessInputEvent( const Toshi::TInputInterface::InputEvent* a_pEvent );
+	TBOOL ProcessInputCommand( AInputCommand a_eCommand, const Toshi::TInputInterface::InputEvent* a_pEvent );
+
+	void AddMenuItem( AGUI2MenuItem& a_rMenuItem );
+	void SetFocusAt( AGUI2MenuItem& a_rMenuItem );
+
+	// Reflows elements vertically and calculates dimensions
+	void ReflowChildrenVertically();
+
+	// Reflows elements horizontally and calculates dimensions
+	void ReflowChildrenHorizontally();
+
+	TBOOL TriggerButtonPress( AGUI2MenuItem& a_rMenuItem );
+
+	void SetMenuAlpha( TFLOAT a_fAlpha, TFLOAT a_fShadowAlpha = -1.0f );
+	void SetMouseStateDirty() { m_bMouseStateDirty = TTRUE; }
+	void SetItemSpacing( TFLOAT a_fSpacing ) { m_fItemSpacing = a_fSpacing; }
+
+	AGUI2MenuItem* GetFocusedMenuItem() const { return m_pFocusedMenuItem; }
+	AGUI2MenuItem* GetHoveredMenuItem() const { return m_pHoveredMenuItem; }
+	AGUI2MenuItem* GetLastMenuItem() const { return m_pLastMenuItem; }
+
+	// Unlinks every menu item from the menu and from the element tree
+	void RemoveAllItems();
+
+	// $Barnyard: FUNCTION 0063e440
+	void SetCallbackUserData( void* a_pUserData ) { m_pCallbackUserData = a_pUserData; }
+
+	// $Barnyard: FUNCTION 0063e420
+	void SetItemActivationCallback( ActivateCallback a_fnCallback ) { m_fnActivateCallback = a_fnCallback; }
+	// $Barnyard: FUNCTION 0063e430
+	void SetItemFocusCallback( FocusCallback a_fnCallback ) { m_fnFocusCallback = a_fnCallback; }
+
+	// NOTE: shared folded setter in retail (004a3920)
+	void SetDefaultFocusElement( AGUI2MenuItem* a_pMenuItem ) { m_pDefaultFocusElement = a_pMenuItem; }
+
+	// NOTE: shared folded setter in retail (005f00a0)
+	void SetCancelItem( AGUI2MenuItem* a_pMenuItem ) { m_pCancelItem = a_pMenuItem; }
+
+	// $Barnyard: FUNCTION 0063e530
+	void SetFocusSound( ASoundId a_eSound ) { m_eFocusSound = a_eSound; }
+
+	// $Barnyard: FUNCTION 0063e540
+	void SetSelectSound( ASoundId a_eSound ) { m_eSelectSound = a_eSound; }
+
+	// $Barnyard: FUNCTION 0063e550
+	void SetBackSound( ASoundId a_eSound ) { m_eBackSound = a_eSound; }
+
+	// $Barnyard: FUNCTION 0063e560
+	void SetNegativeSound( ASoundId a_eSound ) { m_eNegativeSound = a_eSound; }
+
+private:
+	void ActivateFocusedButton();
+
+private:
+	TFLOAT           m_fItemSpacing;
+	AGUI2MenuItem*   m_pDefaultFocusElement;
+	AGUI2MenuItem*   m_pCancelItem;
+	ASoundId         m_eFocusSound;
+	ASoundId         m_eSelectSound;
+	ASoundId         m_eBackSound;
+	ASoundId         m_eNegativeSound;
+	AGUI2MenuItem*   m_pLastMenuItem;
+	AGUI2MenuItem*   m_pFocusedMenuItem;
+	ACTIONFLAGS      m_eActionFlags;
+	TINT             m_Unk3;
+	TINT             m_Unk4;
+	ActivateCallback m_fnActivateCallback;
+	FocusCallback    m_fnFocusCallback;
+	void*            m_pCallbackUserData;
+	TFLOAT           m_fTime;
+	TBOOL            m_bFlag1;
+	TBOOL            m_bHorizontalFlow;
+	TINT             m_iNumMenuItems;
+	TBOOL            m_bMouseStateDirty;
+	AGUI2MenuItem*   m_pHoveredMenuItem;
+};
+
+class AGUI2MenuItem : public Toshi::T2GUIElement
+{
+public:
+	friend class AGUI2Menu;
+
+	enum COMMANDRESULT
+	{
+		COMMANDRESULT_NONE,
+		COMMANDRESULT_OK,
+		COMMANDRESULT_CANCEL,
+	};
+
+public:
+	// constructors/destructor
+	AGUI2MenuItem();
+	~AGUI2MenuItem();
+
+	void LinkMenuItemBefore( AGUI2MenuItem& a_rLinkAfter );
+
+	// Removes the item from the list of menu items it's in
+	void UnlinkMenuItem();
+
+	TBOOL IsEnabled() const { return m_bEnabled; }
+	TBOOL CanFocus() const { return IsEnabled() && IsVisible(); }
+
+	AGUI2MenuItem* GetNextMenuItem() const { return m_pNextMenuItem; }
+	AGUI2MenuItem* GetPrevMenuItem() const { return m_pPrevMenuItem; }
+
+	//-----------------------------------------------------------------------------
+	// T2GUIElement
+	//-----------------------------------------------------------------------------
+	virtual void SetAlpha( TFLOAT a_fAlpha ) OVERRIDE;
+
+	//-----------------------------------------------------------------------------
+	// Own methods
+	//-----------------------------------------------------------------------------
+	virtual void          OnFocus();
+	virtual void          OnFocusLost();
+	virtual void          OnUpdate( TFLOAT a_fDeltaTime );
+	virtual COMMANDRESULT OnInputCommand( AGUI2Menu::ACTIONFLAGS& a_rActionFlags );
+	virtual void          SetEnabled( TBOOL a_bEnabled );
+	virtual TFLOAT        GetFlowVisualOffset();
+	virtual TFLOAT        GetFlowOffset();
+
+private:
+	AGUI2MenuItem* m_pNextMenuItem;
+	AGUI2MenuItem* m_pPrevMenuItem;
+	TBOOL          m_bEnabled;
+};

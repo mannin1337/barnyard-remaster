@@ -1,0 +1,960 @@
+#include "ToshiPCH.h"
+#include "TShaderCombo_DX11.h"
+#include "TRenderInterface_DX11.h"
+
+#include "Thread/TMutex.h"
+#include "Thread/TMutexLock.h"
+
+#include <d3dcompiler.h>
+#include <d3dcommon.h>
+
+//-----------------------------------------------------------------------------
+// Enables memory debugging.
+// Note: Should be the last include!
+//-----------------------------------------------------------------------------
+#include "Core/TMemoryDebugOn.h"
+
+TOSHI_NAMESPACE_START
+
+// No debug info: it embeds the sources in every permutation
+static constexpr UINT SHADER_COMPILE_FLAGS = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+
+static TUINT64 HashData( const void* a_pData, TSIZE a_uiSize, TUINT64 a_uiHash = 14695981039346656037ull )
+{
+	const TUINT8* pBytes = TSTATICCAST( const TUINT8, a_pData );
+
+	for ( TSIZE i = 0; i < a_uiSize; i++ )
+	{
+		a_uiHash ^= pBytes[ i ];
+		a_uiHash *= 1099511628211ull;
+	}
+
+	return a_uiHash;
+}
+
+static TUINT64 HashString( const TCHAR* a_szString, TUINT64 a_uiHash )
+{
+	return HashData( a_szString, T2String8::Length( a_szString ) + 1, a_uiHash );
+}
+
+// The source files read while compiling one entry point, every permutation includes the same ones.
+// The permutations compile on several threads, so it's read with Win32 and guarded by a mutex
+struct TShaderSourceFile
+{
+	TString8 strFileName;
+	TCHAR*   pchData;
+	TUINT    uiSize;
+	TUINT64  uiHash;
+};
+
+class TShaderSourceCache
+{
+public:
+	static constexpr TUINT MAX_FILES = 32;
+
+	using File = TShaderSourceFile;
+
+public:
+	TShaderSourceCache()
+	    : m_uiNumFiles( 0 )
+	{
+		m_oMutex.Create();
+	}
+
+	~TShaderSourceCache()
+	{
+		for ( TUINT i = 0; i < m_uiNumFiles; i++ )
+			delete[] m_aFiles[ i ].pchData;
+	}
+
+	const File* Get( const TString8& a_rcFileName )
+	{
+		TMUTEX_LOCK_SCOPE( m_oMutex );
+
+		for ( TUINT i = 0; i < m_uiNumFiles; i++ )
+		{
+			if ( m_aFiles[ i ].strFileName.CompareNoCase( a_rcFileName.GetString() ) == 0 )
+				return &m_aFiles[ i ];
+		}
+
+		if ( m_uiNumFiles == MAX_FILES )
+			return TNULL;
+
+		HANDLE hFile = CreateFileA( a_rcFileName, GENERIC_READ, FILE_SHARE_READ, TNULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, TNULL );
+		if ( hFile == INVALID_HANDLE_VALUE )
+			return TNULL;
+
+		LARGE_INTEGER oSize;
+		if ( !GetFileSizeEx( hFile, &oSize ) || oSize.QuadPart < 0 || oSize.QuadPart > 64 * 1024 * 1024 )
+		{
+			CloseHandle( hFile );
+			return TNULL;
+		}
+		const DWORD uiSize  = DWORD( oSize.QuadPart );
+		TCHAR*      pchData = new TCHAR[ uiSize + 1 ];
+		DWORD       uiRead  = 0;
+		const BOOL  bRead   = ReadFile( hFile, pchData, uiSize, &uiRead, TNULL ) && uiRead == uiSize;
+		CloseHandle( hFile );
+
+		if ( !bRead )
+		{
+			delete[] pchData;
+			return TNULL;
+		}
+
+		pchData[ uiSize ] = '\0';
+
+		File& rFile       = m_aFiles[ m_uiNumFiles++ ];
+		rFile.strFileName = a_rcFileName;
+		rFile.pchData     = pchData;
+		rFile.uiSize      = uiSize;
+		rFile.uiHash      = HashData( pchData, uiSize );
+
+		return &rFile;
+	}
+
+	// A virtual source lets embedded shaders use the same dependency validation and file format.
+	void AddSource( const TCHAR* a_szName, const TCHAR* a_szData )
+	{
+		TASSERT( m_uiNumFiles < MAX_FILES );
+		File& rFile       = m_aFiles[ m_uiNumFiles++ ];
+		rFile.strFileName = a_szName;
+		rFile.uiSize      = T2String8::Length( a_szData );
+		rFile.pchData     = new TCHAR[ rFile.uiSize + 1 ];
+		TUtil::MemCopy( rFile.pchData, a_szData, rFile.uiSize + 1 );
+		rFile.uiHash = HashData( a_szData, rFile.uiSize );
+	}
+
+	// Only once the compilation is over, the files can't change then
+	TUINT       GetNumFiles() const { return m_uiNumFiles; }
+	const File& GetFile( TUINT a_uiIndex ) const { return m_aFiles[ a_uiIndex ]; }
+
+private:
+	TMutex m_oMutex;
+	File   m_aFiles[ MAX_FILES ];
+	TUINT  m_uiNumFiles;
+};
+
+static TString8 GetDirectory( const TString8& a_rcFileName )
+{
+	const TINT iSeparator = TMath::Max( a_rcFileName.FindReverse( '/' ), a_rcFileName.FindReverse( '\\' ) );
+	return ( iSeparator == -1 ) ? TString8() : a_rcFileName.Mid( 0, iSeparator + 1 );
+}
+
+// Resolves "#include" against the directory of the including file, then of the main file
+class TShaderIncludeHandler : public ID3DInclude
+{
+public:
+	TShaderIncludeHandler( TShaderSourceCache& a_rCache, const TCHAR* a_szFileName )
+	    : m_rCache( a_rCache ), m_strRootDirectory( GetDirectory( a_szFileName ) ), m_uiDepth( 0 )
+	{
+	}
+
+	HRESULT STDMETHODCALLTYPE Open( D3D_INCLUDE_TYPE a_eIncludeType, LPCSTR a_szFileName, LPCVOID a_pParentData, LPCVOID* a_ppData, UINT* a_puiBytes ) override
+	{
+		if ( T2String8::CompareNoCase( a_szFileName, TShaderCombo::COMMON_INCLUDE_NAME ) == 0 )
+		{
+			*a_ppData   = TRenderD3DInterface::GetCommonShaderSource();
+			*a_puiBytes = UINT( T2String8::Length( TRenderD3DInterface::GetCommonShaderSource() ) );
+			return Push( m_strRootDirectory );
+		}
+
+		const TString8& rcDirectory = ( m_uiDepth != 0 ) ? m_astrDirectories[ m_uiDepth - 1 ] : m_strRootDirectory;
+
+		TString8                         strFileName = rcDirectory + a_szFileName;
+		const TShaderSourceFile* pFile       = m_rCache.Get( strFileName );
+
+		if ( !pFile )
+		{
+			strFileName = m_strRootDirectory + a_szFileName;
+			pFile       = m_rCache.Get( strFileName );
+
+			if ( !pFile )
+				return E_FAIL;
+		}
+
+		*a_ppData   = pFile->pchData;
+		*a_puiBytes = pFile->uiSize;
+		return Push( GetDirectory( strFileName ) );
+	}
+
+	HRESULT STDMETHODCALLTYPE Close( LPCVOID a_pData ) override
+	{
+		if ( m_uiDepth != 0 )
+			m_uiDepth--;
+
+		return S_OK;
+	}
+
+private:
+	HRESULT Push( const TString8& a_rcDirectory )
+	{
+		if ( m_uiDepth == MAX_DEPTH )
+			return E_FAIL;
+
+		m_astrDirectories[ m_uiDepth++ ] = a_rcDirectory;
+		return S_OK;
+	}
+
+private:
+	static constexpr TUINT MAX_DEPTH = 16;
+
+	TShaderSourceCache& m_rCache;
+	TString8            m_strRootDirectory;
+	TString8            m_astrDirectories[ MAX_DEPTH ];
+	TUINT               m_uiDepth;
+};
+
+// Checks the definitions of a generated header against the "// STATIC:" lines of the source
+static TBOOL ValidateCombos( const TCHAR* a_szFileName, const TCHAR* a_pchSource, const TShaderCombo::Definition* a_pCombos, TUINT a_uiNumCombos )
+{
+	TUINT        uiNumFound = 0;
+	const TCHAR* pchLine    = a_pchSource;
+
+	while ( *pchLine )
+	{
+		const TCHAR* pchEnd = pchLine;
+		while ( *pchEnd && *pchEnd != '\n' ) pchEnd++;
+
+		const TCHAR* pch = pchLine;
+		while ( pch < pchEnd && ( *pch == ' ' || *pch == '\t' || *pch == '\r' ) ) pch++;
+
+		if ( pch != pchEnd )
+		{
+			// The declarations end at the first line of code
+			if ( pch[ 0 ] != '/' || pch[ 1 ] != '/' )
+				break;
+
+			TCHAR szName[ 64 ];
+			TINT  iMin, iMax;
+			TCHAR szStage[ 4 ] = {};
+
+			if ( sscanf_s( pch, "// STATIC: \"%63[^\"]\" \"%d..%d\" [%3[a-z]]", szName, TUINT( sizeof( szName ) ), &iMin, &iMax, szStage, TUINT( sizeof( szStage ) ) ) >= 3 )
+			{
+				const TShaderCombo::STAGE eStages = ( T2String8::Compare( szStage, "vs" ) == 0 ) ? TShaderCombo::STAGE_VS :
+				                                    ( T2String8::Compare( szStage, "ps" ) == 0 ) ? TShaderCombo::STAGE_PS :
+				                                    ( T2String8::Compare( szStage, "cs" ) == 0 ) ? TShaderCombo::STAGE_CS :
+				                                                                                   TShaderCombo::STAGE_ALL;
+
+				if ( uiNumFound >= a_uiNumCombos )
+					break;
+
+				const TShaderCombo::Definition& rcCombo = a_pCombos[ uiNumFound++ ];
+
+				if ( T2String8::Compare( rcCombo.szName, szName ) != 0 || rcCombo.iMinValue != iMin || rcCombo.iMaxValue != iMax || rcCombo.eStages != eStages )
+				{
+					TERROR( "TShaderCombo: '%s' declares %s %d..%d, the header expects %s %d..%d, regenerate it\n", a_szFileName, szName, iMin, iMax, rcCombo.szName, rcCombo.iMinValue, rcCombo.iMaxValue );
+					return TFALSE;
+				}
+			}
+		}
+
+		pchLine = *pchEnd ? pchEnd + 1 : pchEnd;
+	}
+
+	if ( uiNumFound != a_uiNumCombos )
+	{
+		TERROR( "TShaderCombo: '%s' declares %u combos, the header expects %u, regenerate it\n", a_szFileName, uiNumFound, a_uiNumCombos );
+		return TFALSE;
+	}
+
+	return TTRUE;
+}
+
+// Cache-only mode is a release/test diagnostic. Fail immediately and visibly in the log,
+// before any caller can accidentally dereference a missing shader.
+static void CheckRuntimeCompilationAllowed( const TCHAR* a_szEntryPoint )
+{
+	TCHAR szOnly[ 8 ] = {};
+	if ( GetEnvironmentVariableA( "OPENBARNYARD_SHADER_CACHE_ONLY", szOnly, sizeof( szOnly ) ) == 1 && szOnly[ 0 ] == '1' )
+	{
+		TERROR( "[ShaderCache] MISS entry=%s runtime compilation disabled\n", a_szEntryPoint );
+		fflush( TNULL );
+		ExitProcess( ERROR_FILE_NOT_FOUND );
+	}
+
+	static const bool s_bLogged = []() {
+		HMODULE hCompiler = GetModuleHandleA( D3DCOMPILER_DLL_A );
+		TCHAR szPath[ MAX_PATH ] = {};
+		// &D3DCompile can point to the executable's import thunk on x86.
+		FARPROC pCompile = hCompiler ? GetProcAddress( hCompiler, "D3DCompile" ) : TNULL;
+		if ( pCompile )
+			GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			                   reinterpret_cast<LPCSTR>( pCompile ), &hCompiler );
+		if ( hCompiler )
+			GetModuleFileNameA( hCompiler, szPath, MAX_PATH );
+		TINFO( "[ShaderCache] compiler=%s\n", szPath[ 0 ] ? szPath : "unknown" );
+		return true;
+	}();
+	(void)s_bLogged;
+}
+
+static ID3DBlob* CompilePermutation( TShaderSourceCache& a_rCache, const TCHAR* a_szFileName, const TShaderSourceFile& a_rcSource, LPCSTR a_szEntryPoint, LPCSTR a_szTarget, const TShaderCombo::Definition* a_pCombos, TUINT a_uiNumCombos, TUINT a_uiPermutation )
+{
+	constexpr TUINT MAX_COMBOS = 32;
+	TASSERT( a_uiNumCombos <= MAX_COMBOS );
+
+	D3D_SHADER_MACRO aDefines[ MAX_COMBOS + 1 ];
+	TCHAR            aValues[ MAX_COMBOS ][ 12 ];
+
+	for ( TUINT i = 0; i < a_uiNumCombos; i++ )
+	{
+		const TShaderCombo::Definition& rcCombo = a_pCombos[ i ];
+		const TINT iValue = rcCombo.iMinValue + TINT( ( a_uiPermutation / rcCombo.uiStride ) % TUINT( rcCombo.iMaxValue - rcCombo.iMinValue + 1 ) );
+
+		T2String8::Format( aValues[ i ], TINT( sizeof( aValues[ i ] ) ), "%d", iValue );
+		aDefines[ i ].Name       = rcCombo.szName;
+		aDefines[ i ].Definition = aValues[ i ];
+	}
+
+	aDefines[ a_uiNumCombos ] = { TNULL, TNULL };
+
+	TShaderIncludeHandler oIncludeHandler( a_rCache, a_szFileName );
+	ID3DBlob*             pBlob      = TNULL;
+	ID3DBlob*             pErrorBlob = TNULL;
+
+	CheckRuntimeCompilationAllowed( a_szEntryPoint );
+	if ( FAILED( D3DCompile( a_rcSource.pchData, a_rcSource.uiSize, a_szFileName, aDefines, &oIncludeHandler, a_szEntryPoint, a_szTarget, SHADER_COMPILE_FLAGS, 0, &pBlob, &pErrorBlob ) ) )
+	{
+		const TCHAR* szError = pErrorBlob ? TSTATICCAST( const TCHAR, pErrorBlob->GetBufferPointer() ) : "";
+		OutputDebugStringA( szError );
+		TERROR( "TShaderCombo: %s:%s permutation %u failed to compile: %s\n", a_szFileName, a_szEntryPoint, a_uiPermutation, szError );
+		pBlob = TNULL;
+	}
+
+	if ( pErrorBlob )
+		pErrorBlob->Release();
+
+	return pBlob;
+}
+
+// The debug info of the bytecode holds the defines, so it's compared without it
+static ID3DBlob* StripBytecode( ID3DBlob* a_pBlob )
+{
+	ID3DBlob* pStripped = TNULL;
+
+	if ( FAILED( D3DStripShader( a_pBlob->GetBufferPointer(), a_pBlob->GetBufferSize(), D3DCOMPILER_STRIP_DEBUG_INFO | D3DCOMPILER_STRIP_TEST_BLOBS, &pStripped ) ) )
+	{
+		a_pBlob->AddRef();
+		return a_pBlob;
+	}
+
+	return pStripped;
+}
+
+static TBOOL IsSameBytecode( ID3DBlob* a_pBlob1, ID3DBlob* a_pBlob2 )
+{
+	return a_pBlob1->GetBufferSize() == a_pBlob2->GetBufferSize() &&
+	    TUtil::MemCompare( a_pBlob1->GetBufferPointer(), a_pBlob2->GetBufferPointer(), a_pBlob1->GetBufferSize() ) == 0;
+}
+
+// The permutations that have to be compiled, shared by the compiler threads
+struct TCompileJob
+{
+	TShaderSourceCache*             pCache;
+	const TCHAR*                    szFileName;
+	const TShaderSourceFile* pSource;
+	LPCSTR                          szEntryPoint;
+	LPCSTR                          szTarget;
+	const TShaderCombo::Definition* pCombos;
+	TUINT                           uiNumCombos;
+	const TUINT*                    pPermutations;
+	ID3DBlob**                      ppBlobs; // indexed like pPermutations
+	TUINT                           uiNumPermutations;
+	volatile LONG                   iNext;
+	volatile LONG                   bFailed;
+};
+
+static DWORD WINAPI CompileThreadProc( LPVOID a_pJob )
+{
+	TCompileJob* pJob = TSTATICCAST( TCompileJob, a_pJob );
+
+	while ( !pJob->bFailed )
+	{
+		const LONG iIndex = InterlockedIncrement( &pJob->iNext ) - 1;
+		if ( iIndex >= LONG( pJob->uiNumPermutations ) )
+			break;
+
+		pJob->ppBlobs[ iIndex ] = CompilePermutation( *pJob->pCache, pJob->szFileName, *pJob->pSource, pJob->szEntryPoint, pJob->szTarget, pJob->pCombos, pJob->uiNumCombos, pJob->pPermutations[ iIndex ] );
+
+		if ( !pJob->ppBlobs[ iIndex ] )
+			InterlockedExchange( &pJob->bFailed, TRUE );
+	}
+
+	return 0;
+}
+
+static void RunCompileJob( TCompileJob& a_rJob )
+{
+	constexpr TUINT MAX_THREADS = 32;
+
+	SYSTEM_INFO oSystemInfo;
+	GetSystemInfo( &oSystemInfo );
+
+	// The calling thread compiles too
+	const TUINT uiNumThreads = TMath::Min( TMath::Min( TUINT( oSystemInfo.dwNumberOfProcessors ), MAX_THREADS ), a_rJob.uiNumPermutations );
+	HANDLE      ahThreads[ MAX_THREADS ];
+	TUINT       uiNumStarted = 0;
+
+	for ( TUINT i = 1; i < uiNumThreads; i++ )
+	{
+		HANDLE hThread = CreateThread( TNULL, 0, CompileThreadProc, &a_rJob, 0, TNULL );
+		if ( hThread )
+			ahThreads[ uiNumStarted++ ] = hThread;
+	}
+
+	CompileThreadProc( &a_rJob );
+
+	if ( uiNumStarted != 0 )
+		WaitForMultipleObjects( uiNumStarted, ahThreads, TRUE, INFINITE );
+
+	for ( TUINT i = 0; i < uiNumStarted; i++ )
+		CloseHandle( ahThreads[ i ] );
+}
+
+//-----------------------------------------------------------------------------
+// Bytecode cache: the unique shaders, the permutation table and the hash of every source file
+// the compilation read. It's reused while the files, the combos and the entry point are the same
+//-----------------------------------------------------------------------------
+static constexpr TUINT32 SHADER_CACHE_MAGIC   = TFourCC( "TSCC" );
+static constexpr TUINT32 SHADER_CACHE_VERSION = 2;
+
+struct TShaderCacheHeader
+{
+	TUINT32 uiMagic;
+	TUINT32 uiVersion;
+	TUINT64 uiKey;
+	TUINT32 uiNumFiles;
+	TUINT32 uiNumPermutations;
+	TUINT32 uiNumUniqueShaders;
+	TUINT64 uiPayloadHash; // all dependency records, the permutation table and bytecode
+};
+
+static TUINT64 GetCacheKey( LPCSTR a_szEntryPoint, LPCSTR a_szTarget, const TShaderCombo::Definition* a_pCombos, TUINT a_uiNumCombos )
+{
+	const UINT uiFlags = SHADER_COMPILE_FLAGS;
+
+	TUINT64 uiKey = HashString( a_szEntryPoint, 14695981039346656037ull );
+	uiKey         = HashString( a_szTarget, uiKey );
+	uiKey         = HashData( &uiFlags, sizeof( uiFlags ), uiKey );
+	uiKey         = HashString( TRenderD3DInterface::GetCommonShaderSource(), uiKey );
+
+	for ( TUINT i = 0; i < a_uiNumCombos; i++ )
+	{
+		uiKey = HashString( a_pCombos[ i ].szName, uiKey );
+		uiKey = HashData( &a_pCombos[ i ].iMinValue, sizeof( a_pCombos[ i ].iMinValue ), uiKey );
+		uiKey = HashData( &a_pCombos[ i ].iMaxValue, sizeof( a_pCombos[ i ].iMaxValue ), uiKey );
+		uiKey = HashData( &a_pCombos[ i ].uiStride, sizeof( a_pCombos[ i ].uiStride ), uiKey );
+		uiKey = HashData( &a_pCombos[ i ].eStages, sizeof( a_pCombos[ i ].eStages ), uiKey );
+	}
+
+	return uiKey;
+}
+
+class TCacheReader
+{
+public:
+	TCacheReader( const TCHAR* a_szFileName )
+	    : m_pData( TNULL ), m_uiSize( 0 ), m_uiOffset( 0 )
+	{
+		HANDLE hFile = CreateFileA( a_szFileName, GENERIC_READ, FILE_SHARE_READ, TNULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, TNULL );
+		if ( hFile == INVALID_HANDLE_VALUE )
+			return;
+
+		LARGE_INTEGER oSize;
+		if ( !GetFileSizeEx( hFile, &oSize ) || oSize.QuadPart < 0 || oSize.QuadPart > 64 * 1024 * 1024 )
+		{
+			CloseHandle( hFile );
+			return;
+		}
+		const DWORD uiSize = DWORD( oSize.QuadPart );
+		m_pData            = new TUINT8[ uiSize ];
+		DWORD uiRead       = 0;
+
+		if ( ReadFile( hFile, m_pData, uiSize, &uiRead, TNULL ) && uiRead == uiSize )
+			m_uiSize = uiSize;
+
+		CloseHandle( hFile );
+	}
+
+	~TCacheReader() { delete[] m_pData; }
+
+	TUINT GetRemainingSize() const { return m_uiSize - m_uiOffset; }
+	TUINT64 GetRemainingHash() const { return HashData( m_pData + m_uiOffset, GetRemainingSize() ); }
+
+	const void* ReadBytes( TUINT a_uiSize )
+	{
+		if ( a_uiSize > m_uiSize - m_uiOffset )
+			return TNULL;
+
+		const void* pData = m_pData + m_uiOffset;
+		m_uiOffset += a_uiSize;
+		return pData;
+	}
+
+	template <class T>
+	TBOOL Read( T& a_rValue )
+	{
+		const void* pData = ReadBytes( sizeof( T ) );
+		if ( pData ) TUtil::MemCopy( &a_rValue, pData, sizeof( T ) );
+		return pData != TNULL;
+	}
+
+private:
+	TUINT8* m_pData;
+	TUINT   m_uiSize;
+	TUINT   m_uiOffset;
+};
+
+TShaderCombo::TShaderCombo()
+    : m_eStage( STAGE_VS ), m_uiNumPermutations( 0 ), m_uiNumUniqueShaders( 0 ), m_pPermutationToShader( TNULL ), m_ppBlobs( TNULL ), m_ppShaders( TNULL )
+{
+}
+
+TShaderCombo::~TShaderCombo()
+{
+	Destroy();
+}
+
+TUINT TShaderCombo::GetNumPermutations( const Definition* a_pCombos, TUINT a_uiNumCombos )
+{
+	TUINT uiNumPermutations = 1;
+
+	for ( TUINT i = 0; i < a_uiNumCombos; i++ )
+		uiNumPermutations *= TUINT( a_pCombos[ i ].iMaxValue - a_pCombos[ i ].iMinValue + 1 );
+
+	return uiNumPermutations;
+}
+
+static TString8 GetShaderCachePath( const TCHAR* a_szKind, TUINT64 a_uiKey )
+{
+	TCHAR szDirectory[ MAX_PATH ] = {};
+	const DWORD uiLength = GetEnvironmentVariableA( "OPENBARNYARD_SHADER_CACHE_DIR", szDirectory, MAX_PATH );
+	TString8 strDirectory;
+	if ( uiLength > 0 && uiLength < MAX_PATH )
+		strDirectory = szDirectory;
+	else
+	{
+		GetModuleFileNameA( TNULL, szDirectory, MAX_PATH );
+		strDirectory = GetDirectory( szDirectory ) + "ShaderCache";
+	}
+	strDirectory += TString8::VarArgs( "/%s_%016llx.cache", a_szKind, a_uiKey ).GetString();
+	return strDirectory;
+}
+
+ID3DBlob* TShaderCombo::CompileCached( const TCHAR* a_szSource, LPCSTR a_szEntryPoint, LPCSTR a_szTarget, const D3D_SHADER_MACRO* a_pDefines )
+{
+	TUINT64 uiKey = GetCacheKey( a_szEntryPoint, a_szTarget, TNULL, 0 );
+	uiKey = HashString( a_szSource, uiKey );
+	for ( const D3D_SHADER_MACRO* pDefine = a_pDefines; pDefine && pDefine->Name; pDefine++ )
+	{
+		uiKey = HashString( pDefine->Name, uiKey );
+		uiKey = HashString( pDefine->Definition ? pDefine->Definition : "", uiKey );
+	}
+	const TString8 strCacheFile = GetShaderCachePath( "embedded", uiKey );
+	TShaderSourceCache oSources;
+	oSources.AddSource( "<embedded>", a_szSource );
+	TShaderCombo oBytecode;
+	oBytecode.m_pPermutationToShader = new TUINT16[ 1 ]{ 0 };
+	oBytecode.m_ppBlobs = new ID3DBlob*[ 1 ]{};
+	if ( oBytecode.LoadCache( strCacheFile, uiKey, 1, &oSources ) )
+		TINFO( "[ShaderCache] HIT embedded=%016llx entry=%s target=%s\n", uiKey, a_szEntryPoint, a_szTarget );
+	else
+	{
+		// A rejected cache may have overwritten the permutation table before failing.
+		oBytecode.m_pPermutationToShader[ 0 ] = 0;
+		CheckRuntimeCompilationAllowed( a_szEntryPoint );
+		ID3DBlob* pErrors = TNULL;
+		const HRESULT hr = D3DCompile( a_szSource, T2String8::Length( a_szSource ), TNULL, a_pDefines, TNULL,
+		                               a_szEntryPoint, a_szTarget, SHADER_COMPILE_FLAGS, 0, &oBytecode.m_ppBlobs[ 0 ], &pErrors );
+		if ( FAILED( hr ) )
+			TERROR( "[ShaderCache] compile failed entry=%s: %s\n", a_szEntryPoint, pErrors ? TSTATICCAST( const TCHAR, pErrors->GetBufferPointer() ) : "unknown" );
+		if ( pErrors ) pErrors->Release();
+		if ( FAILED( hr ) ) return TNULL;
+		oBytecode.m_uiNumPermutations = oBytecode.m_uiNumUniqueShaders = 1;
+		oBytecode.SaveCache( strCacheFile, uiKey, oSources );
+		TINFO( "[ShaderCache] COMPILED embedded=%016llx entry=%s target=%s\n", uiKey, a_szEntryPoint, a_szTarget );
+	}
+	oBytecode.m_ppBlobs[ 0 ]->AddRef();
+	return oBytecode.m_ppBlobs[ 0 ];
+}
+
+TBOOL TShaderCombo::Create( const TCHAR* a_szFileName, LPCSTR a_szEntryPoint, LPCSTR a_szTarget, const Definition* a_pCombos, TUINT a_uiNumCombos, const TCHAR* a_szCacheFileName )
+{
+	Destroy();
+
+	TShaderSourceCache              oCache;
+	const TShaderSourceFile* pSource = oCache.Get( a_szFileName );
+
+	if ( !pSource )
+	{
+		TERROR( "TShaderCombo: couldn't read '%s'\n", a_szFileName );
+		return TFALSE;
+	}
+
+	if ( !ValidateCombos( a_szFileName, pSource->pchData, a_pCombos, a_uiNumCombos ) )
+	{
+		TASSERT( TFALSE && "The combos of the shader don't match its generated header" );
+		return TFALSE;
+	}
+
+	m_eStage                      = ( a_szTarget[ 0 ] == 'v' ) ? STAGE_VS : ( a_szTarget[ 0 ] == 'c' ) ? STAGE_CS : STAGE_PS;
+	const TUINT uiNumPermutations = GetNumPermutations( a_pCombos, a_uiNumCombos );
+	const TUINT64 uiCacheKey      = GetCacheKey( a_szEntryPoint, a_szTarget, a_pCombos, a_uiNumCombos );
+
+	m_pPermutationToShader = new TUINT16[ uiNumPermutations ];
+	m_ppBlobs              = new ID3DBlob*[ uiNumPermutations ];
+	m_ppShaders            = new ID3D11DeviceChild*[ uiNumPermutations ];
+	TUtil::MemClear( m_ppShaders, uiNumPermutations * sizeof( *m_ppShaders ) );
+
+	const TString8 strDefaultCache = GetShaderCachePath( "combo", HashString( a_szFileName, uiCacheKey ) );
+	if ( !a_szCacheFileName ) a_szCacheFileName = strDefaultCache;
+	if ( !LoadCache( a_szCacheFileName, uiCacheKey, uiNumPermutations, &oCache ) )
+	{
+		CheckRuntimeCompilationAllowed( a_szEntryPoint );
+		TINFO( "[ShaderCache] COMPILE file=%s entry=%s\n", a_szFileName, a_szEntryPoint );
+		if ( !Compile( oCache, a_szFileName, *pSource, a_szEntryPoint, a_szTarget, a_pCombos, a_uiNumCombos, uiNumPermutations ) )
+		{
+			Destroy();
+			return TFALSE;
+		}
+
+		if ( a_szCacheFileName )
+			SaveCache( a_szCacheFileName, uiCacheKey, oCache );
+	}
+	else
+		TINFO( "[ShaderCache] HIT file=%s entry=%s\n", a_szFileName, a_szEntryPoint );
+
+	for ( TUINT i = 0; i < m_uiNumUniqueShaders; i++ )
+	{
+		ID3DBlob* pBlob = m_ppBlobs[ i ];
+		TBOOL     bCreated;
+
+		if ( m_eStage == STAGE_VS )
+			bCreated = TRenderD3DInterface::CreateVertexShader( pBlob->GetBufferPointer(), pBlob->GetBufferSize(), TREINTERPRETCAST( ID3D11VertexShader**, &m_ppShaders[ i ] ) );
+		else if ( m_eStage == STAGE_CS )
+			bCreated = TRenderD3DInterface::CreateComputeShader( pBlob->GetBufferPointer(), pBlob->GetBufferSize(), TREINTERPRETCAST( ID3D11ComputeShader**, &m_ppShaders[ i ] ) );
+		else
+			bCreated = TRenderD3DInterface::CreatePixelShader( pBlob->GetBufferPointer(), pBlob->GetBufferSize(), TREINTERPRETCAST( ID3D11PixelShader**, &m_ppShaders[ i ] ) );
+
+		if ( !bCreated )
+		{
+			Destroy();
+			return TFALSE;
+		}
+
+#ifdef TOSHI_DEBUG
+		const TCHAR* pchFileName = TMath::Max( strrchr( a_szFileName, '\\' ), strrchr( a_szFileName, '/' ) );
+
+		TCHAR szName[ 128 ];
+		T2String8::Format( szName, TINT( sizeof( szName ) ), "%.64s:%.32s#%u", pchFileName ? pchFileName + 1 : a_szFileName, a_szEntryPoint, i );
+		m_ppShaders[ i ]->SetPrivateData( WKPDID_D3DDebugObjectName, T2String8::Length( szName ), szName );
+#endif
+
+		// Only the bytecode of vertex shaders is needed later, for the input layouts
+		if ( m_eStage != STAGE_VS )
+		{
+			pBlob->Release();
+			m_ppBlobs[ i ] = TNULL;
+		}
+	}
+
+	return TTRUE;
+}
+
+TBOOL TShaderCombo::Compile( TShaderSourceCache& a_rCache, const TCHAR* a_szFileName, const TShaderSourceFile& a_rcSource, LPCSTR a_szEntryPoint, LPCSTR a_szTarget, const Definition* a_pCombos, TUINT a_uiNumCombos, TUINT a_uiNumPermutations )
+{
+	// Permutations that only differ in combos of the other stage share the shader of the
+	// one with those combos at their minimum, which comes first
+	TUINT* pCanonical    = new TUINT[ a_uiNumPermutations ];
+	TUINT* pToCompile    = new TUINT[ a_uiNumPermutations ];
+	TUINT  uiNumToCompile = 0;
+
+	for ( TUINT i = 0; i < a_uiNumPermutations; i++ )
+	{
+		TUINT uiCanonical = i;
+
+		for ( TUINT k = 0; k < a_uiNumCombos; k++ )
+		{
+			if ( !( a_pCombos[ k ].eStages & m_eStage ) )
+				uiCanonical -= ( ( i / a_pCombos[ k ].uiStride ) % TUINT( a_pCombos[ k ].iMaxValue - a_pCombos[ k ].iMinValue + 1 ) ) * a_pCombos[ k ].uiStride;
+		}
+
+		pCanonical[ i ] = uiCanonical;
+
+		if ( uiCanonical == i )
+			pToCompile[ uiNumToCompile++ ] = i;
+	}
+
+	ID3DBlob** ppCompiled = new ID3DBlob*[ uiNumToCompile ];
+	TUtil::MemClear( ppCompiled, uiNumToCompile * sizeof( *ppCompiled ) );
+
+	TCompileJob oJob;
+	oJob.pCache            = &a_rCache;
+	oJob.szFileName        = a_szFileName;
+	oJob.pSource           = &a_rcSource;
+	oJob.szEntryPoint      = a_szEntryPoint;
+	oJob.szTarget          = a_szTarget;
+	oJob.pCombos           = a_pCombos;
+	oJob.uiNumCombos       = a_uiNumCombos;
+	oJob.pPermutations     = pToCompile;
+	oJob.ppBlobs           = ppCompiled;
+	oJob.uiNumPermutations = uiNumToCompile;
+	oJob.iNext             = 0;
+	oJob.bFailed           = FALSE;
+	RunCompileJob( oJob );
+
+	const TBOOL bCompiled = !oJob.bFailed;
+
+	if ( bCompiled )
+	{
+		// Combos that don't change the code of this stage give the same bytecode
+		ID3DBlob** ppStripped = new ID3DBlob*[ uiNumToCompile ];
+		TUINT      uiCompiled = 0;
+
+		for ( TUINT i = 0; i < a_uiNumPermutations; i++ )
+		{
+			if ( pCanonical[ i ] != i )
+			{
+				m_pPermutationToShader[ i ] = m_pPermutationToShader[ pCanonical[ i ] ];
+				continue;
+			}
+
+			ID3DBlob* pBlob     = ppCompiled[ uiCompiled ];
+			ID3DBlob* pStripped = StripBytecode( pBlob );
+			TUINT     uiShader  = m_uiNumUniqueShaders;
+			ppCompiled[ uiCompiled++ ] = TNULL;
+
+			for ( TUINT k = 0; k < m_uiNumUniqueShaders; k++ )
+			{
+				if ( IsSameBytecode( ppStripped[ k ], pStripped ) )
+				{
+					uiShader = k;
+					break;
+				}
+			}
+
+			if ( uiShader == m_uiNumUniqueShaders )
+			{
+				m_ppBlobs[ m_uiNumUniqueShaders ]      = pBlob;
+				ppStripped[ m_uiNumUniqueShaders++ ] = pStripped;
+			}
+			else
+			{
+				pBlob->Release();
+				pStripped->Release();
+			}
+
+			TASSERT( uiShader <= TUINT16( -1 ) );
+			m_pPermutationToShader[ i ] = TUINT16( uiShader );
+		}
+
+		for ( TUINT i = 0; i < m_uiNumUniqueShaders; i++ )
+			ppStripped[ i ]->Release();
+
+		delete[] ppStripped;
+		m_uiNumPermutations = a_uiNumPermutations;
+	}
+
+	for ( TUINT i = 0; i < uiNumToCompile; i++ )
+	{
+		if ( ppCompiled[ i ] )
+			ppCompiled[ i ]->Release();
+	}
+
+	delete[] ppCompiled;
+	delete[] pToCompile;
+	delete[] pCanonical;
+
+	return bCompiled;
+}
+
+TBOOL TShaderCombo::LoadCache( const TCHAR* a_szCacheFileName, TUINT64 a_uiKey, TUINT a_uiNumPermutations, TShaderSourceCache* a_pSourceCache )
+{
+	TCacheReader       oReader( a_szCacheFileName );
+	TShaderCacheHeader oHeader;
+
+	if ( a_pSourceCache->GetNumFiles() == 0 || !oReader.Read( oHeader ) || oHeader.uiMagic != SHADER_CACHE_MAGIC || oHeader.uiVersion != SHADER_CACHE_VERSION ||
+	     oHeader.uiKey != a_uiKey || oHeader.uiNumPermutations != a_uiNumPermutations || oHeader.uiNumUniqueShaders == 0 ||
+	     oHeader.uiNumUniqueShaders > a_uiNumPermutations || oHeader.uiNumFiles == 0 || oHeader.uiNumFiles > TShaderSourceCache::MAX_FILES ||
+	     oHeader.uiPayloadHash != oReader.GetRemainingHash() )
+		return TFALSE;
+
+	// Every file the compilation read, the main file first
+	for ( TUINT i = 0; i < oHeader.uiNumFiles; i++ )
+	{
+		TUINT32 uiNameLength;
+		TUINT64 uiHash;
+
+		const TCHAR* pchName = oReader.Read( uiNameLength ) ? TSTATICCAST( const TCHAR, oReader.ReadBytes( uiNameLength ) ) : TNULL;
+		if ( !pchName || uiNameLength == 0 || pchName[ uiNameLength - 1 ] != '\0' ||
+		     T2String8::Length( pchName ) + 1 != uiNameLength || !oReader.Read( uiHash ) )
+			return TFALSE;
+
+		// An explicitly named cache can be reused for a different source with the same combos.
+		if ( i == 0 && a_pSourceCache->GetFile( 0 ).strFileName.CompareNoCase( pchName ) != 0 )
+			return TFALSE;
+
+		const TShaderSourceFile* pFile = a_pSourceCache->Get( pchName );
+		if ( !pFile || pFile->uiHash != uiHash )
+			return TFALSE;
+	}
+
+	if ( a_pSourceCache->GetNumFiles() != oHeader.uiNumFiles ||
+	     a_uiNumPermutations > oReader.GetRemainingSize() / sizeof( TUINT16 ) )
+		return TFALSE;
+
+	const void* pTable = oReader.ReadBytes( a_uiNumPermutations * sizeof( TUINT16 ) );
+	if ( !pTable )
+		return TFALSE;
+
+	TUtil::MemCopy( m_pPermutationToShader, pTable, a_uiNumPermutations * sizeof( TUINT16 ) );
+
+	for ( TUINT i = 0; i < oHeader.uiNumUniqueShaders; i++ )
+	{
+		TUINT32     uiSize;
+		const void* pBytecode = oReader.Read( uiSize ) ? oReader.ReadBytes( uiSize ) : TNULL;
+
+		if ( !pBytecode || uiSize == 0 || FAILED( D3DCreateBlob( uiSize, &m_ppBlobs[ m_uiNumUniqueShaders ] ) ) )
+		{
+			ReleaseBlobs();
+			return TFALSE;
+		}
+
+		TUtil::MemCopy( m_ppBlobs[ m_uiNumUniqueShaders++ ]->GetBufferPointer(), pBytecode, uiSize );
+	}
+
+	for ( TUINT i = 0; i < a_uiNumPermutations; i++ )
+	{
+		if ( m_pPermutationToShader[ i ] >= m_uiNumUniqueShaders )
+		{
+			ReleaseBlobs();
+			return TFALSE;
+		}
+	}
+
+	if ( oReader.GetRemainingSize() != 0 )
+	{
+		ReleaseBlobs();
+		return TFALSE;
+	}
+
+	m_uiNumPermutations = a_uiNumPermutations;
+	return TTRUE;
+}
+
+void TShaderCombo::SaveCache( const TCHAR* a_szCacheFileName, TUINT64 a_uiKey, const TShaderSourceCache& a_rcSourceCache ) const
+{
+	const TString8 strDirectory = GetDirectory( a_szCacheFileName );
+	if ( strDirectory.Length() != 0 ) CreateDirectoryA( strDirectory, TNULL );
+	const TString8 strTemporary = TString8::VarArgs( "%s.%lu.%lu.tmp", a_szCacheFileName, GetCurrentProcessId(), GetCurrentThreadId() );
+	HANDLE hFile = CreateFileA( strTemporary, GENERIC_WRITE, 0, TNULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, TNULL );
+
+	if ( hFile == INVALID_HANDLE_VALUE )
+	{
+		TWARN( "TShaderCombo: couldn't write the cache '%s'\n", a_szCacheFileName );
+		return;
+	}
+
+	TShaderCacheHeader oHeader = { SHADER_CACHE_MAGIC, SHADER_CACHE_VERSION, a_uiKey, a_rcSourceCache.GetNumFiles(), m_uiNumPermutations, m_uiNumUniqueShaders, 0 };
+	DWORD uiWritten;
+	TBOOL bWritten = WriteFile( hFile, &oHeader, sizeof( oHeader ), &uiWritten, TNULL ) && uiWritten == sizeof( oHeader );
+	TUINT64 uiHash = 14695981039346656037ull;
+	auto fnWrite = [ hFile, &bWritten, &uiHash ]( const void* a_pData, TUINT a_uiSize ) {
+		if ( !bWritten ) return;
+		DWORD uiCount;
+		bWritten = WriteFile( hFile, a_pData, a_uiSize, &uiCount, TNULL ) && uiCount == a_uiSize;
+		if ( bWritten ) uiHash = HashData( a_pData, a_uiSize, uiHash );
+	};
+
+	for ( TUINT i = 0; i < a_rcSourceCache.GetNumFiles(); i++ )
+	{
+		const TShaderSourceFile& rcFile       = a_rcSourceCache.GetFile( i );
+		const TUINT32                   uiNameLength = rcFile.strFileName.Length() + 1;
+
+		fnWrite( &uiNameLength, sizeof( uiNameLength ) );
+		fnWrite( rcFile.strFileName.GetString(), uiNameLength );
+		fnWrite( &rcFile.uiHash, sizeof( rcFile.uiHash ) );
+	}
+
+	fnWrite( m_pPermutationToShader, m_uiNumPermutations * sizeof( TUINT16 ) );
+
+	for ( TUINT i = 0; i < m_uiNumUniqueShaders; i++ )
+	{
+		const TUINT32 uiSize = TUINT32( m_ppBlobs[ i ]->GetBufferSize() );
+		fnWrite( &uiSize, sizeof( uiSize ) );
+		fnWrite( m_ppBlobs[ i ]->GetBufferPointer(), uiSize );
+	}
+
+	oHeader.uiPayloadHash = uiHash;
+	LARGE_INTEGER oStart = {};
+	bWritten = bWritten && SetFilePointerEx( hFile, oStart, TNULL, FILE_BEGIN ) &&
+	           WriteFile( hFile, &oHeader, sizeof( oHeader ), &uiWritten, TNULL ) && uiWritten == sizeof( oHeader ) && FlushFileBuffers( hFile );
+	CloseHandle( hFile );
+
+	// Never truncate a usable cache if an interrupted write, full disk or another process intervenes.
+	if ( !bWritten || !MoveFileExA( strTemporary, a_szCacheFileName, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH ) )
+	{
+		DeleteFileA( strTemporary );
+		TWARN( "TShaderCombo: couldn't finish the cache '%s'\n", a_szCacheFileName );
+	}
+}
+
+void TShaderCombo::ReleaseBlobs()
+{
+	for ( TUINT i = 0; i < m_uiNumUniqueShaders; i++ )
+	{
+		if ( m_ppBlobs[ i ] )
+			m_ppBlobs[ i ]->Release();
+	}
+
+	m_uiNumUniqueShaders = 0;
+}
+
+void TShaderCombo::Destroy()
+{
+	for ( TUINT i = 0; i < m_uiNumUniqueShaders; i++ )
+	{
+		if ( m_ppShaders && m_ppShaders[ i ] )
+			m_ppShaders[ i ]->Release();
+
+		if ( m_ppBlobs[ i ] )
+			m_ppBlobs[ i ]->Release();
+	}
+
+	delete[] m_pPermutationToShader;
+	delete[] m_ppBlobs;
+	delete[] m_ppShaders;
+
+	m_pPermutationToShader = TNULL;
+	m_ppBlobs              = TNULL;
+	m_ppShaders            = TNULL;
+	m_uiNumPermutations    = 0;
+	m_uiNumUniqueShaders   = 0;
+}
+
+ID3DBlob* TShaderCombo::GetBlob( TUINT a_uiPermutation ) const
+{
+	TASSERT( m_eStage == STAGE_VS && a_uiPermutation < m_uiNumPermutations );
+	return m_ppBlobs[ m_pPermutationToShader[ a_uiPermutation ] ];
+}
+
+ID3D11VertexShader* TShaderCombo::GetVertexShader( TUINT a_uiPermutation ) const
+{
+	TASSERT( m_eStage == STAGE_VS && a_uiPermutation < m_uiNumPermutations );
+	return TSTATICCAST( ID3D11VertexShader, m_ppShaders[ m_pPermutationToShader[ a_uiPermutation ] ] );
+}
+
+ID3D11PixelShader* TShaderCombo::GetPixelShader( TUINT a_uiPermutation ) const
+{
+	TASSERT( m_eStage == STAGE_PS && a_uiPermutation < m_uiNumPermutations );
+	return TSTATICCAST( ID3D11PixelShader, m_ppShaders[ m_pPermutationToShader[ a_uiPermutation ] ] );
+}
+
+ID3D11ComputeShader* TShaderCombo::GetComputeShader( TUINT a_uiPermutation ) const
+{
+	TASSERT( m_eStage == STAGE_CS && a_uiPermutation < m_uiNumPermutations );
+	return TSTATICCAST( ID3D11ComputeShader, m_ppShaders[ m_pPermutationToShader[ a_uiPermutation ] ] );
+}
+
+TOSHI_NAMESPACE_END

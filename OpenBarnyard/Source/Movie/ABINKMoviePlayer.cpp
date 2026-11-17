@@ -1,0 +1,755 @@
+#include "pch.h"
+
+#include "Render/TBackend.h"
+
+#include "ABINKMoviePlayer.h"
+
+#include <Toshi/TSystem.h>
+#include <Render/TTextureFactory.h>
+
+#include <fmod/fmod.h>
+
+//-----------------------------------------------------------------------------
+// Enables memory debugging.
+// Note: Should be the last include!
+//-----------------------------------------------------------------------------
+#include <Core/TMemoryDebugOn.h>
+
+TOSHI_NAMESPACE_USING
+
+// NOTE: GetClass 00605850, CreateObject 00605bd0, CreateObjectInPlace 00605c60
+TDEFINE_CLASS( ABINKMoviePlayer );
+
+// $Barnyard: FUNCTION 00605880
+// $Barnyard: FUNCTION 00605ce0
+ABINKMoviePlayer::~ABINKMoviePlayer()
+{
+}
+
+ABINKMoviePlayer::ABINKMoviePlayer()
+{
+	m_Bink      = TNULL;
+	m_bPlaying  = TFALSE;
+	m_bPaused   = TFALSE;
+	m_bVisible  = TFALSE;
+	m_pSurface  = TNULL;
+	m_iNumRects = 0;
+}
+
+// $Barnyard: FUNCTION 00605830
+static void* RADLINK BinkAlloc( U32 a_uiSize )
+{
+	return TMalloc( a_uiSize );
+}
+
+// $Barnyard: FUNCTION 00605890
+TBOOL ABINKMoviePlayer::OnCreate()
+{
+	BinkSetMemory(
+	    BinkAlloc,
+	    []( void* ptr ) {
+		    TFree( ptr );
+	    }
+	);
+
+	int iOutput = FSOUND_GetOutput();
+
+	if ( iOutput == FSOUND_OUTPUT_WINMM )
+	{
+		BinkSetSoundSystem( BinkOpenWaveOut, 0 );
+	}
+	else if ( iOutput == FSOUND_OUTPUT_DSOUND )
+	{
+		auto outHandle = FSOUND_GetOutputHandle();
+
+		if ( outHandle )
+		{
+			BinkSetSoundSystem( BinkOpenDirectSound, TREINTERPRETCAST( int, outHandle ) );
+		}
+	}
+
+	return TTRUE;
+}
+
+// $Barnyard: FUNCTION 006061f0
+TBOOL ABINKMoviePlayer::OnUpdate( TFLOAT a_fDeltaTime )
+{
+	if ( !IsMoviePlaying() )
+	{
+		return TTRUE;
+	}
+
+	if ( m_Bink->LastFrameNum == m_Bink->Frames )
+	{
+		StopMovie();
+		return TTRUE;
+	}
+
+	if ( g_oSystemManager.IsPaused() )
+	{
+		if ( !m_bPaused )
+		{
+			BinkPause( m_Bink, 1 );
+			BinkSetSoundOnOff( m_Bink, 0 );
+			m_bPaused = TTRUE;
+		}
+	}
+	else
+	{
+		if ( m_bPaused )
+		{
+			BinkPause( m_Bink, 0 );
+			BinkSetSoundOnOff( m_Bink, 1 );
+			m_bPaused = TFALSE;
+		}
+	}
+
+	auto iWaitRes = BinkWait( m_Bink );
+
+	if ( iWaitRes == 0 )
+	{
+		if ( BinkDoFrame( m_Bink ) == 0 )
+		{
+			if ( !m_bVideoFitsBackBuffer || !m_pSurface )
+			{
+				if ( !m_pRects )
+				{
+					if ( !CreateSurfaces() )
+					{
+						return TTRUE;
+					}
+
+					m_eFormat |= BINKCOPYALL;
+				}
+			}
+
+#if defined( TRENDERINTERFACE_DX8 )
+			auto ppRenderSurface = &m_pSurface;
+
+			if ( m_bVideoFitsBackBuffer ||
+			     TSTATICCAST( TTextureResourceHAL, m_pRects[ 0 ].pTexture )->GetD3DTexture()->GetSurfaceLevel( 0, ppRenderSurface ) == S_OK )
+			{
+				D3DLOCKED_RECT rect;
+				if ( S_OK == ( *ppRenderSurface )->LockRect( &rect, TNULL, 0 ) )
+				{
+					BinkCopyToBuffer( m_Bink, rect.pBits, rect.Pitch, m_Bink->Height, 0, 0, m_eFormat );
+					m_eFormat &= ~BINKCOPYALL;
+					( *ppRenderSurface )->UnlockRect();
+
+					if ( !m_bVideoFitsBackBuffer )
+					{
+						( *ppRenderSurface )->Release();
+						( *ppRenderSurface ) = TNULL;
+					}
+				}
+			}
+#elif defined( TRENDERINTERFACE_DX11 )
+			if ( m_bVideoFitsBackBuffer )
+			{
+				ID3D11DeviceContext*     pDeviceContext = TRenderInterfaceHAL::Interface()->GetDeviceContext();
+				D3D11_MAPPED_SUBRESOURCE oMapped;
+
+				if ( SUCCEEDED( pDeviceContext->Map( m_pSurface, 0, D3D11_MAP_WRITE, 0, &oMapped ) ) )
+				{
+					BinkCopyToBuffer( m_Bink, oMapped.pData, oMapped.RowPitch, m_Bink->Height, 0, 0, m_eFormat );
+					m_eFormat &= ~BINKCOPYALL;
+					pDeviceContext->Unmap( m_pSurface, 0 );
+				}
+			}
+			else
+			{
+				TTexture::LOCKSTATE oLockState;
+
+				if ( m_pRects[ 0 ].pTexture->Lock( oLockState ) )
+				{
+					BinkCopyToBuffer( m_Bink, oLockState.pBits, oLockState.Pitch, m_Bink->Height, 0, 0, m_eFormat );
+					m_eFormat &= ~BINKCOPYALL;
+					m_pRects[ 0 ].pTexture->Unlock();
+				}
+			}
+#elif defined( TRENDERINTERFACE_GL )
+			TTexture::LOCKSTATE oLockState;
+
+			if ( m_pRects[ 0 ].pTexture->Lock( oLockState ) )
+			{
+				BinkCopyToBuffer( m_Bink, oLockState.pBits, oLockState.Pitch, m_Bink->Height, 0, 0, m_eFormat );
+				m_eFormat &= ~BINKCOPYALL;
+				m_pRects[ 0 ].pTexture->Unlock();
+			}
+#endif
+		}
+
+		BinkNextFrame( m_Bink );
+	}
+
+	m_bVisible = TTRUE;
+	return TTRUE;
+}
+
+void ABINKMoviePlayer::OnDestroy()
+{
+}
+
+// $Barnyard: FUNCTION 00606180
+TBOOL ABINKMoviePlayer::PlayMovie( const TCHAR* a_szFileName, PLAYFLAGS a_eFlags )
+{
+	TVALIDPTR( a_szFileName );
+
+	SetMovieFile( a_szFileName );
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+	// Dev switches: "-background" (and "-mute") runs open movies without their sound tracks
+	if ( T2String8::FindString( GetCommandLineA(), "-background" ) || T2String8::FindString( GetCommandLineA(), "-mute" ) )
+		BinkSetSoundTrack( 0, TNULL );
+#endif
+
+	m_Bink = BinkOpen( m_szMoviePath, 0 );
+
+	if ( m_Bink != TNULL )
+	{
+		if ( !CreateSurfaces() )
+		{
+			BinkClose( m_Bink );
+			m_Bink = TNULL;
+			return TFALSE;
+		}
+
+#if defined( BARNYARD_COMMUNITY_PATCH ) && defined( TOSHI_SKU_WINDOWS ) && !defined( TOSHI_FINAL )
+		if ( T2String8::FindString( GetCommandLineA(), "-devstats" ) )
+		{
+			TINFO( "[devmovie] playing=%s\n", a_szFileName );
+			fflush( stdout );
+		}
+#endif
+		m_bPlaying = TTRUE;
+		m_bVisible = TFALSE;
+		m_bPaused  = TFALSE;
+		OnUpdate( 0.0f );
+	}
+
+	return m_Bink != TNULL;
+}
+
+// $Barnyard: FUNCTION 00606070
+TBOOL ABINKMoviePlayer::CreateSurfaces()
+{
+#if defined( TRENDERINTERFACE_DX8 )
+	auto pRender = TRenderInterfaceHAL::Interface();
+	auto pDevice = pRender->GetDirect3DDevice();
+
+	IDirect3DSurface8* pSurface;
+	auto               hRes = pDevice->GetBackBuffer( 0, D3DBACKBUFFER_TYPE_MONO, &pSurface );
+
+	if ( hRes == S_OK )
+	{
+		D3DSURFACE_DESC desc;
+		hRes = pSurface->GetDesc( &desc );
+
+		if ( hRes == S_OK )
+		{
+			switch ( desc.Format )
+			{
+				case D3DFMT_R8G8B8:
+					m_eFormat = BINKSURFACE24;
+					break;
+				case D3DFMT_A8R8G8B8:
+					m_eFormat = BINKSURFACE32A;
+					break;
+				case D3DFMT_X8R8G8B8:
+					m_eFormat = BINKSURFACE32;
+					break;
+				case D3DFMT_R5G6B5:
+					m_eFormat = BINKSURFACE565;
+					break;
+				case D3DFMT_X1R5G5B5:
+					m_eFormat = BINKSURFACE555;
+					break;
+				case D3DFMT_A1R5G5B5:
+					m_eFormat = BINKSURFACE5551;
+					break;
+				case D3DFMT_A4R4G4B4:
+					m_eFormat = BINKSURFACE4444;
+					break;
+			}
+		}
+
+		if ( desc.Width == m_Bink->Width && desc.Height == m_Bink->Height )
+		{
+			m_bVideoFitsBackBuffer = TTRUE;
+			hRes                   = pDevice->CreateImageSurface( desc.Width, desc.Height, desc.Format, &m_pSurface );
+		}
+		else
+		{
+			m_bVideoFitsBackBuffer = TFALSE;
+			CreateAGUISurfaces( desc.Width, desc.Height, desc.Format );
+		}
+
+		pSurface->Release();
+	}
+
+	return hRes == S_OK;
+#elif defined( TRENDERINTERFACE_DX11 )
+	auto pRender = TRenderInterfaceHAL::Interface();
+
+	D3D11_TEXTURE2D_DESC desc;
+	pRender->GetRenderTargetTexture()->GetDesc( &desc );
+
+	switch ( desc.Format )
+	{
+		case DXGI_FORMAT_R8G8B8A8_UNORM:
+			m_eFormat = BINKSURFACE32R;
+			break;
+		case DXGI_FORMAT_B8G8R8A8_UNORM:
+			m_eFormat = BINKSURFACE32A;
+			break;
+		case DXGI_FORMAT_B8G8R8X8_UNORM:
+			m_eFormat = BINKSURFACE32;
+			break;
+		case DXGI_FORMAT_B5G6R5_UNORM:
+			m_eFormat = BINKSURFACE565;
+			break;
+		case DXGI_FORMAT_B5G5R5A1_UNORM:
+			m_eFormat = BINKSURFACE5551;
+			break;
+		case DXGI_FORMAT_B4G4R4A4_UNORM:
+			m_eFormat = BINKSURFACE4444;
+			break;
+	}
+
+	HRESULT hRes = S_OK;
+
+	if ( desc.Width == m_Bink->Width && desc.Height == m_Bink->Height )
+	{
+		m_bVideoFitsBackBuffer = TTRUE;
+
+		desc.Usage          = D3D11_USAGE_STAGING;
+		desc.BindFlags      = 0;
+		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		desc.MiscFlags      = 0;
+		hRes                = pRender->GetDevice()->CreateTexture2D( &desc, TNULL, &m_pSurface );
+	}
+	else
+	{
+		m_bVideoFitsBackBuffer = TFALSE;
+		CreateAGUISurfaces( desc.Width, desc.Height, desc.Format );
+	}
+
+	return hRes == S_OK;
+#elif defined( TRENDERINTERFACE_GL )
+	auto pDisplayParams = TRenderInterfaceHAL::Interface()->GetCurrentDisplayParams();
+
+	m_bVideoFitsBackBuffer = TFALSE;
+	return CreateAGUISurfaces( pDisplayParams->uiWidth, pDisplayParams->uiHeight );
+#endif
+}
+
+// $Barnyard: FUNCTION 00606040
+void ABINKMoviePlayer::StopMovie()
+{
+	if ( m_Bink )
+	{
+		BinkClose( m_Bink );
+		m_Bink = TNULL;
+		DestroySurfaces();
+	}
+
+	m_bPlaying = TFALSE;
+	m_bVisible = TFALSE;
+	m_bPaused  = TFALSE;
+}
+
+// $Barnyard: FUNCTION 00605860
+void ABINKMoviePlayer::PauseMovie( TBOOL a_bPause )
+{
+	m_bPaused = a_bPause;
+}
+
+// $Barnyard: FUNCTION 005f7770
+TBOOL ABINKMoviePlayer::IsMoviePlaying()
+{
+	return m_bPlaying;
+}
+
+// $Barnyard: FUNCTION 00605870
+TBOOL ABINKMoviePlayer::IsMoviePaused()
+{
+	return m_bPaused;
+}
+
+// $Barnyard: FUNCTION 006058e0
+void ABINKMoviePlayer::Render( TFLOAT a_fDeltaTime )
+{
+	if ( IsMoviePlaying() && m_bVisible )
+	{
+#if defined( TRENDERINTERFACE_DX8 )
+		auto pDevice = TRenderInterfaceHAL::Interface()->GetDirect3DDevice();
+#endif
+
+		if ( m_bVideoFitsBackBuffer )
+		{
+#if defined( TRENDERINTERFACE_DX8 )
+			IDirect3DSurface8* pSurface;
+			auto               hRes = pDevice->GetBackBuffer( 0, D3DBACKBUFFER_TYPE_MONO, &pSurface );
+
+			if ( hRes == S_OK )
+			{
+				pDevice->CopyRects( m_pSurface, TNULL, 0, pSurface, TNULL );
+				pSurface->Release();
+			}
+#elif defined( TRENDERINTERFACE_DX11 )
+			auto pRender = TRenderInterfaceHAL::Interface();
+			pRender->GetDeviceContext()->CopyResource( pRender->GetRenderTargetTexture(), m_pSurface );
+#endif
+		}
+		else
+		{
+			auto pRender = AGUI2::GetRenderer();
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+			// The bars beside the video: nothing else draws the screen while a video plays
+			if ( m_bBars )
+			{
+				auto pRenderInterface = TRenderInterfaceHAL::Interface();
+				auto pDisplayParams   = pRenderInterface->GetCurrentDisplayParams();
+				pRenderInterface->ClearRegion( 0, 0, TINT( pDisplayParams->uiWidth ), TINT( pDisplayParams->uiHeight ), TRenderInterfaceHAL::CLEARFLAGS_TARGET, 0, 0, 0, 1.0f, 0 );
+			}
+#endif
+
+			pRender->BeginScene();
+
+			for ( TINT i = 0; i < m_iNumRects; i++ )
+			{
+				pRender->SetMaterial( m_pRects[ i ].pMaterial );
+				pRender->RenderRectangle( m_pRects[ i ].Pos1, m_pRects[ i ].Pos2, m_pRects[ i ].UV1, m_pRects[ i ].UV2 );
+			}
+
+			pRender->EndScene();
+		}
+	}
+}
+
+// $Barnyard: FUNCTION 006059f0
+void ABINKMoviePlayer::SetMovieFile( const TCHAR* a_szFile )
+{
+	TStringManager::String8Format( m_szMoviePath, sizeof( m_szMoviePath ), "Data/Movies/%s.bik", a_szFile );
+}
+
+#if defined( TRENDERINTERFACE_DX8 )
+// $Barnyard: FUNCTION 00605d50
+TBOOL ABINKMoviePlayer::CreateAGUISurfaces( TUINT a_uiWidth, TUINT a_uiHeight, D3DFORMAT a_eFormat )
+{
+	auto pDevice = TRenderInterfaceHAL::Interface()->GetDirect3DDevice();
+
+	D3DCAPS8 caps;
+	auto     hRes = pDevice->GetDeviceCaps( &caps );
+
+	if ( hRes == S_OK )
+	{
+		TUINT uiWidth            = m_Bink->Width;
+		TUINT uiHeight           = m_Bink->Height;
+		TUINT uiMaxTextureWidth  = caps.MaxTextureWidth;
+		TUINT uiMaxTextureHeight = caps.MaxTextureHeight;
+
+		m_iNumRects = ( ( uiHeight - 1 ) + uiMaxTextureHeight ) / uiMaxTextureHeight * ( ( uiWidth - 1 ) + uiMaxTextureWidth ) / uiMaxTextureWidth;
+		m_pRects    = new Rect[ m_iNumRects ];
+
+		auto pDisplayParams = TRenderInterfaceHAL::Interface()->GetCurrentDisplayParams();
+
+		TFLOAT fWidth, fHeight;
+		AGUI2::GetSingleton()->GetDimensions( fWidth, fHeight );
+
+		TFLOAT fScaleX = a_uiWidth / ( ( pDisplayParams->uiWidth / fWidth ) * m_Bink->Width );
+		TFLOAT fScaleY = a_uiHeight / ( ( pDisplayParams->uiHeight / fHeight ) * m_Bink->Height );
+
+#  ifdef BARNYARD_COMMUNITY_PATCH
+		KeepAspect( fScaleX, fScaleY );
+#  endif
+
+		TTEXTURERESOURCEFORMAT eFormat;
+
+		if ( a_eFormat == D3DFMT_A8R8G8B8 )
+		{
+			eFormat = TTEXTURERESOURCEFORMAT::R8G8B8A8;
+		}
+		else if ( a_eFormat == D3DFMT_X8R8G8B8 )
+		{
+			eFormat = TTEXTURERESOURCEFORMAT::R8G8B8;
+		}
+		else if ( a_eFormat == D3DFMT_A1R5G5B5 )
+		{
+			eFormat = TTEXTURERESOURCEFORMAT::R5G5B5A1;
+		}
+		else
+		{
+			return TFALSE;
+		}
+
+		TFLOAT fVideoWidth  = TMath::Abs( TFLOAT( m_Bink->Width ) );
+		TFLOAT fVideoHeight = TMath::Abs( TFLOAT( m_Bink->Height ) );
+
+		TUINT uiPosY      = 0;
+		TUINT uiRectIndex = 0;
+
+		TUINT uiLeftHeight = uiHeight;
+		while ( 0 < TINT( uiLeftHeight ) )
+		{
+			TUINT uiRectHeight = TMath::Min( uiLeftHeight, uiMaxTextureHeight );
+			uiWidth            = m_Bink->Width;
+
+			TUINT uiPosX      = 0;
+			TUINT uiLeftWidth = m_Bink->Width;
+
+			while ( 0 < TINT( uiLeftWidth ) )
+			{
+				TUINT uiRectWidth = TMath::Min( uiLeftWidth, uiMaxTextureWidth );
+				TBOOL bCreated    = m_pRects[ uiRectIndex ].Create(
+                    uiPosX,
+                    uiPosY,
+                    uiRectWidth,
+                    uiRectHeight,
+                    ( uiPosX + fVideoWidth * -0.5f ) * fScaleX,
+                    ( uiPosY + fVideoHeight * -0.5f ) * fScaleY,
+                    uiRectWidth * fScaleX,
+                    uiRectHeight * fScaleY,
+                    eFormat
+                );
+
+				if ( !bCreated )
+				{
+					TASSERT( TFALSE, "ABINKMoviePlayer: Unable to create rectangle" );
+					delete[] m_pRects;
+					m_pRects = TNULL;
+					return TFALSE;
+				}
+
+				uiPosX += TMath::Min( uiWidth, uiMaxTextureWidth );
+
+				uiLeftWidth -= uiRectWidth;
+				uiRectIndex++;
+			}
+
+			uiPosY += uiRectHeight;
+			uiLeftHeight -= uiRectHeight;
+		}
+	}
+
+	return hRes == S_OK;
+}
+#elif defined( TRENDERINTERFACE_DX11 ) || defined( TRENDERINTERFACE_GL )
+#  ifdef TRENDERINTERFACE_GL
+TBOOL ABINKMoviePlayer::CreateAGUISurfaces( TUINT a_uiWidth, TUINT a_uiHeight )
+#  else
+TBOOL ABINKMoviePlayer::CreateAGUISurfaces( TUINT a_uiWidth, TUINT a_uiHeight, DXGI_FORMAT a_eFormat )
+#  endif
+{
+	{
+		TUINT uiWidth            = m_Bink->Width;
+		TUINT uiHeight           = m_Bink->Height;
+#  ifdef TRENDERINTERFACE_GL
+		TUINT uiMaxTextureWidth  = 2048;
+		TUINT uiMaxTextureHeight = 2048;
+#  else
+		TUINT uiMaxTextureWidth  = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+		TUINT uiMaxTextureHeight = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+#  endif
+
+		m_iNumRects = ( ( uiHeight - 1 ) + uiMaxTextureHeight ) / uiMaxTextureHeight * ( ( uiWidth - 1 ) + uiMaxTextureWidth ) / uiMaxTextureWidth;
+		m_pRects    = new Rect[ m_iNumRects ];
+
+		auto pDisplayParams = TRenderInterfaceHAL::Interface()->GetCurrentDisplayParams();
+
+		TFLOAT fWidth, fHeight;
+		AGUI2::GetSingleton()->GetDimensions( fWidth, fHeight );
+
+		TFLOAT fScaleX = a_uiWidth / ( ( pDisplayParams->uiWidth / fWidth ) * m_Bink->Width );
+		TFLOAT fScaleY = a_uiHeight / ( ( pDisplayParams->uiHeight / fHeight ) * m_Bink->Height );
+
+#  ifdef BARNYARD_COMMUNITY_PATCH
+		KeepAspect( fScaleX, fScaleY );
+#  endif
+
+		TTEXTURERESOURCEFORMAT eFormat;
+
+#  ifdef TRENDERINTERFACE_GL
+		eFormat   = TTEXTURERESOURCEFORMAT::R8G8B8;
+		m_eFormat = BINKSURFACE32;
+#  else
+		// NOTE: the textures are B8G8R8A8/B8G8R8X8 like on D3D8, which the back buffer (R8G8B8A8) isn't
+		if ( a_eFormat == DXGI_FORMAT_B8G8R8A8_UNORM )
+		{
+			eFormat   = TTEXTURERESOURCEFORMAT::R8G8B8A8;
+			m_eFormat = BINKSURFACE32A;
+		}
+		else if ( a_eFormat == DXGI_FORMAT_B8G8R8X8_UNORM || a_eFormat == DXGI_FORMAT_R8G8B8A8_UNORM )
+		{
+			eFormat   = TTEXTURERESOURCEFORMAT::R8G8B8;
+			m_eFormat = BINKSURFACE32;
+		}
+		else if ( a_eFormat == DXGI_FORMAT_B5G5R5A1_UNORM )
+		{
+			eFormat = TTEXTURERESOURCEFORMAT::R5G5B5A1;
+		}
+		else
+		{
+			return TFALSE;
+		}
+#  endif
+
+		TFLOAT fVideoWidth  = TMath::Abs( TFLOAT( m_Bink->Width ) );
+		TFLOAT fVideoHeight = TMath::Abs( TFLOAT( m_Bink->Height ) );
+
+		TUINT uiPosY      = 0;
+		TUINT uiRectIndex = 0;
+
+		TUINT uiLeftHeight = uiHeight;
+		while ( 0 < TINT( uiLeftHeight ) )
+		{
+			TUINT uiRectHeight = TMath::Min( uiLeftHeight, uiMaxTextureHeight );
+			uiWidth            = m_Bink->Width;
+
+			TUINT uiPosX      = 0;
+			TUINT uiLeftWidth = m_Bink->Width;
+
+			while ( 0 < TINT( uiLeftWidth ) )
+			{
+				TUINT uiRectWidth = TMath::Min( uiLeftWidth, uiMaxTextureWidth );
+				TBOOL bCreated    = m_pRects[ uiRectIndex ].Create(
+                    uiPosX,
+                    uiPosY,
+                    uiRectWidth,
+                    uiRectHeight,
+                    ( uiPosX + fVideoWidth * -0.5f ) * fScaleX,
+                    ( uiPosY + fVideoHeight * -0.5f ) * fScaleY,
+                    uiRectWidth * fScaleX,
+                    uiRectHeight * fScaleY,
+                    eFormat
+                );
+
+				if ( !bCreated )
+				{
+					TASSERT( TFALSE, "ABINKMoviePlayer: Unable to create rectangle" );
+					delete[] m_pRects;
+					m_pRects = TNULL;
+					return TFALSE;
+				}
+
+				uiPosX += TMath::Min( uiWidth, uiMaxTextureWidth );
+
+				uiLeftWidth -= uiRectWidth;
+				uiRectIndex++;
+			}
+
+			uiPosY += uiRectHeight;
+			uiLeftHeight -= uiRectHeight;
+		}
+	}
+
+	return TTRUE;
+}
+#endif // TRENDERINTERFACE_DX8
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+
+// The videos are 640x480 (4:3) and the original stretched them over the whole screen. On screens that aren't 4:3 both
+// sides get the smaller scale: the video keeps its aspect in the middle, the rest is black (4:3 screens are unchanged).
+void ABINKMoviePlayer::KeepAspect( TFLOAT& a_rScaleX, TFLOAT& a_rScaleY )
+{
+	const TFLOAT fScale = TMath::Min( a_rScaleX, a_rScaleY );
+	m_bBars             = TMath::Abs( a_rScaleX - a_rScaleY ) > fScale * 0.001f;
+
+	if ( m_bBars )
+	{
+		a_rScaleX = fScale;
+		a_rScaleY = fScale;
+	}
+}
+
+#endif // BARNYARD_COMMUNITY_PATCH
+
+// $Barnyard: FUNCTION 00605d00
+void ABINKMoviePlayer::DestroySurfaces()
+{
+#if defined( TRENDERINTERFACE_DX8 )
+	if ( m_pSurface )
+	{
+		m_pSurface->Release();
+		m_pSurface = TNULL;
+	}
+#elif defined( TRENDERINTERFACE_DX11 )
+	if ( m_pSurface )
+	{
+		m_pSurface->Release();
+		m_pSurface = TNULL;
+	}
+#endif
+
+	delete[] m_pRects;
+	m_pRects    = TNULL;
+	m_iNumRects = 0;
+}
+
+// $Barnyard: FUNCTION 00605a10
+ABINKMoviePlayer::Rect::~Rect()
+{
+	if ( pMaterial )
+	{
+		AGUI2::GetRenderer()->DestroyMaterial( pMaterial );
+		pMaterial = TNULL;
+	}
+
+	if ( pTexture )
+	{
+		pTexture->DestroyResource();
+		pTexture = TNULL;
+	}
+
+	delete[] pData;
+	pData = TNULL;
+}
+
+// $Barnyard: FUNCTION 00605a60
+TBOOL ABINKMoviePlayer::Rect::Create( int a_iPosX, int a_iPosY, int a_iWidth, int a_iHeight, TFLOAT a_iRenderPos1X, TFLOAT a_iRenderPos1Y, TFLOAT a_iRenderWidth, TFLOAT a_iRenderHeight, TTEXTURERESOURCEFORMAT a_eFormat )
+{
+	iPosY   = a_iPosY;
+	iPosX   = a_iPosX;
+	iWidth  = a_iWidth;
+	iHeight = a_iHeight;
+	Pos1    = { a_iRenderPos1X, a_iRenderPos1Y };
+	Pos2    = { a_iRenderPos1X + a_iRenderWidth, a_iRenderPos1Y + a_iRenderHeight };
+
+	TUINT32 uiWidth  = TMath::RoundToNextPowerOfTwo( a_iWidth );
+	TUINT32 uiHeight = TMath::RoundToNextPowerOfTwo( a_iHeight );
+	TINT    iPixelSize;
+
+	if ( a_eFormat == TTEXTURERESOURCEFORMAT::Unknown )
+	{
+		return TFALSE;
+	}
+	else if ( a_eFormat == TTEXTURERESOURCEFORMAT::R8G8B8A8 || a_eFormat == TTEXTURERESOURCEFORMAT::R8G8B8 )
+	{
+		iPixelSize = 4;
+	}
+	else if ( a_eFormat == TTEXTURERESOURCEFORMAT::R5G5B5A1 )
+	{
+		iPixelSize = 2;
+	}
+	else
+	{
+		return TFALSE;
+	}
+
+	auto uiDataSize  = iPixelSize * uiWidth * uiHeight;
+	pData            = new TUINT8[ uiDataSize ];
+	auto pTexFactory = TRenderInterface::GetSingleton()->GetSystemResource<TTextureFactory>( SYSRESOURCE_TEXTUREFACTORY );
+
+	pTexture = pTexFactory->CreateEx( pData, uiDataSize, uiWidth, uiHeight, 1, a_eFormat, TTexture::MIPFLAGS_UNK2 );
+	pTexture->SetAddressing( ADDRESSINGMODE_CLAMP );
+
+	pMaterial = AGUI2::GetRenderer()->CreateMaterial( pTexture );
+	pMaterial->SetBlendState( T2GUIMaterial::BLENDSTATE_OPAQUE );
+
+	UV1 = { 0.0f, 0.0f };
+	UV2 = { TFLOAT( a_iWidth ) / uiWidth, TFLOAT( a_iHeight ) / uiHeight };
+
+	return TTRUE;
+}

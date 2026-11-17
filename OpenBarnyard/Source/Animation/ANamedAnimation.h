@@ -1,0 +1,172 @@
+#pragma once
+#include "AAnimationBreakpoint.h"
+
+#include <Toshi/TPString8.h>
+#include <ToshiTools/T2DynamicVector.h>
+#include <Toshi/T2SortedVector.h>
+#include <Toshi/T2Map.h>
+#include <Render/TSkeleton.h>
+#include <Plugins/PPropertyParser/PBProperties.h>
+
+class ANamedAnimation;
+
+//-----------------------------------------------------------------------------
+// Purpose: Represents a single transition of a named animation
+//-----------------------------------------------------------------------------
+class ANamedAnimationTransition
+{
+public:
+	friend class ANamedAnimation;
+	friend class ANamedAnimationTransitionSet;
+
+public:
+	ANamedAnimationTransition();
+	ANamedAnimationTransition( const ANamedAnimationTransition& a_rcOther );
+	~ANamedAnimationTransition();
+
+	void                    SetTransitionName( const Toshi::TPString8& a_strName );
+	void                    SetAnimationName( const Toshi::TPString8& a_strName );
+	const Toshi::TPString8& GetTransitionName();
+	const Toshi::TPString8& GetAnimationName();
+
+	void SetBlendInTime( TFLOAT a_fTime );
+	void SetBlendOutTime( TFLOAT a_fTime );
+	void SetAutoTransition( TBOOL a_bAutoTransition );
+	void SetManaged( TBOOL a_bManaged );
+
+	TFLOAT GetBlendInTime() const;
+	TFLOAT GetBlendOutTime() const;
+	TBOOL  IsAutoTransition() const;
+	TBOOL  IsManaged() const;
+
+private:
+	Toshi::TPString8 m_strTransitionName;
+	TFLOAT           m_fBlendOutTime;
+	TFLOAT           m_fBlendInTime;
+	Toshi::TPString8 m_strAnimationName;
+	TBOOL            m_bAutoTransition;
+	TBOOL            m_bManaged;
+};
+
+//-----------------------------------------------------------------------------
+// Purpose: Holds map of transitions applied to a named animation
+//-----------------------------------------------------------------------------
+class ANamedAnimationTransitionSet
+{
+public:
+	friend class ANamedAnimation;
+
+public:
+	ANamedAnimationTransitionSet( ANamedAnimation* a_pNamedAnimation, Toshi::T2Allocator* a_pAllocator );
+	~ANamedAnimationTransitionSet();
+
+	void                       AddTransition( ANamedAnimation* a_pAnimation, const Toshi::TPString8& a_strTransitionName, TFLOAT a_fBlendOutTime, TFLOAT a_fBlendInTime, TBOOL a_bIsAutoTransition, TBOOL a_bManaged );
+	ANamedAnimationTransition* FindTransition( const Toshi::TPString8& a_strName );
+	ANamedAnimationTransition* GetDestTransition();
+
+private:
+	ANamedAnimation* m_pAnimation;
+
+	using TransitionMap = Toshi::T2Map<Toshi::TPString8, ANamedAnimationTransition, Toshi::TPString8::Comparator>;
+	TransitionMap m_mapTransitions;
+
+	Toshi::TPString8 m_strAnimationName;
+	TBOOL            m_bUnk3;
+	Toshi::TPString8 m_strUnk4;
+};
+
+class ANamedAnimation
+{
+public:
+	using FLAGS = TUINT16;
+	enum FLAGS_ : FLAGS
+	{
+		FLAGS_NONE               = 0,
+		FLAGS_FINISH_MANUAL      = BITFLAG( 0 ),
+		FLAGS_FINISH_ON_ANIM_END = BITFLAG( 1 ),
+		FLAGS_OVERLAY            = BITFLAG( 2 ),
+		FLAGS_STATIC             = BITFLAG( 3 ),
+		FLAGS_NO_ANIM_REF        = BITFLAG( 4 ),
+		FLAGS_LOOP               = BITFLAG( 5 ),
+		FLAGS_REVERSE            = BITFLAG( 6 ),
+		FLAGS_HAS_TRANSITION_IN  = BITFLAG( 7 ), // set on the LinkTo animation of a loaded transition
+	};
+
+	using FINISHTYPE = TINT;
+	enum FINISHTYPE_ : FINISHTYPE
+	{
+		FINISHTYPE_MANUAL,
+		FINISHTYPE_AUTO
+	};
+
+	struct AAnimationBreakpointSortResult
+	{
+		// $Barnyard: FUNCTION 0057fcd0
+		// $Barnyard: FUNCTION 006b6930
+		TINT operator()( AAnimationBreakpoint* const& a_rcVal1, AAnimationBreakpoint* const& a_rcVal2 ) const
+		{
+			TFLOAT fDiff = a_rcVal1->GetTime() - a_rcVal2->GetTime();
+
+			if ( 0.0f < fDiff )
+				return 1;
+
+			if ( fDiff < 0.0f )
+				return -1;
+
+			return 0;
+		}
+	};
+
+	using BreakpointList       = Toshi::T2DynamicVector<AAnimationBreakpoint*>;
+	using SortedBreakpointList = Toshi::T2SortedVector<AAnimationBreakpoint*, BreakpointList, AAnimationBreakpointSortResult>;
+
+public:
+	// constructors/destructor
+	ANamedAnimation( Toshi::T2Allocator* a_pAllocator );
+	~ANamedAnimation();
+
+	TBOOL Create( const PBProperties* a_pProperties, Toshi::TSkeleton* a_pSkeleton );
+	void  Reset();
+
+	// NOTE: a_pSkeleton is unused
+	void AttachBreakpoint( AAnimationBreakpoint* a_pBreakpoint, Toshi::TSkeleton* a_pSkeleton );
+
+	// Creates a breakpoint of the class named by "Type" of a_pProperties (see AAnimationBreakpoint::CreateBreakpoint)
+	// and calls its Create. If a_bTimed is TFALSE, the breakpoint is untimed. Returns TNULL if there's no such class.
+	static AAnimationBreakpoint* CreateBreakpointRuntime( const PBProperties* a_pProperties, TBOOL a_bTimed );
+
+	ANamedAnimationTransitionSet& GetTransitionSet() { return m_oTransitionSet; }
+
+	TINT16                  GetSequenceId() const { return m_iSequenceId; }
+	TBOOL                   IsFinishManual() const { return m_eFlags & FLAGS_FINISH_MANUAL; }
+	TBOOL                   IsOverlay() const { return m_eFlags & FLAGS_OVERLAY; }
+	TBOOL                   IsReversed() const { return m_eFlags & FLAGS_REVERSE; }
+	TBOOL                   IsLooped() const { return m_eFlags & FLAGS_LOOP; }
+	TBOOL                   IsStatic() const { return m_eFlags & FLAGS_STATIC; }
+	FLAGS                   GetFlags() const { return m_eFlags; }
+	void                    AddFlags( FLAGS a_eFlags ) { m_eFlags |= a_eFlags; }
+	TFLOAT                  GetDefaultBlendOutTime() const { return m_fDefaultBlendOutTime; }
+	TFLOAT                  GetDefaultBlendInTime() const { return m_fDefaultBlendInTime; }
+	TFLOAT                  GetDefaultWeight() const { return m_fDefaultWeight; }
+	TFLOAT                  GetSpeed() const { return m_fSpeed; }
+	TFLOAT                  GetDuration() const { return m_fDuration; }
+	const Toshi::TPString8& GetName() const { return m_strName; }
+	const Toshi::TPString8& GetExportedName() const { return m_strExportedName; }
+	SortedBreakpointList&   GetBreakpoints() { return m_vecBreakpoints; }
+
+	static FINISHTYPE GetFinishType( const Toshi::TPString8& a_rcFinishType );
+
+private:
+	Toshi::TPString8             m_strExportedName;
+	Toshi::TPString8             m_strName;
+	TINT16                       m_iSequenceId;
+	FLAGS                        m_eFlags;
+	ANamedAnimationTransitionSet m_oTransitionSet;
+	TFLOAT                       m_fDefaultBlendOutTime;
+	TFLOAT                       m_fDefaultBlendInTime;
+	TFLOAT                       m_fDefaultWeight;
+	TFLOAT                       m_fSpeed;
+	TFLOAT                       m_fDuration;
+	Toshi::T2Allocator*          m_pAllocator;
+	SortedBreakpointList         m_vecBreakpoints;
+};

@@ -1,0 +1,58 @@
+-- Where OpenBarnyard is, a workspace that includes it from elsewhere (e.g. as a submodule) sets it first
+OpenBarnyardDir = OpenBarnyardDir or "%{wks.location}"
+
+IncludeDir = {}
+IncludeDir.fmod = OpenBarnyardDir .. "/Toshi/Vendor/fmod/include"
+IncludeDir.toshi = OpenBarnyardDir .. "/Toshi/Source"
+IncludeDir.xml2pproperties = OpenBarnyardDir .. "/Tools/XML2PProperties/Source"
+IncludeDir.trbf = OpenBarnyardDir .. "/Tools/TRBF/Include"
+IncludeDir.libogg = OpenBarnyardDir .. "/Toshi/Vendor/libogg/include"
+IncludeDir.libvorbis = OpenBarnyardDir .. "/Toshi/Vendor/libvorbis/include"
+IncludeDir.libtheora = OpenBarnyardDir .. "/Toshi/Vendor/libtheora/include"
+IncludeDir.theoraplay = OpenBarnyardDir .. "/Toshi/Vendor/theoraplay/include"
+IncludeDir.stb = OpenBarnyardDir .. "/Toshi/Vendor/stb"
+IncludeDir.dx8 = OpenBarnyardDir .. "/Toshi/Vendor/DX81/include"
+IncludeDir.bink = OpenBarnyardDir .. "/Toshi/Vendor/bink/include"
+IncludeDir.detours = OpenBarnyardDir .. "/SDK/Vendor/Detours/include"
+IncludeDir.glm = OpenBarnyardDir .. "/Toshi/Vendor/glm/include"
+IncludeDir.glew = OpenBarnyardDir .. "/Toshi/Vendor/glew/include"
+IncludeDir.sdl2 = OpenBarnyardDir .. "/Toshi/Vendor/sdl2/include"
+IncludeDir.libssl = OpenBarnyardDir .. "/Toshi/Vendor/libssl/include"
+IncludeDir.opcode = OpenBarnyardDir .. "/Toshi/Vendor/Opcode/source"
+IncludeDir.toshi = OpenBarnyardDir .. "/Toshi/Source"
+IncludeDir.byardsdk = OpenBarnyardDir .. "/SDK/BYardSDK/Source"
+IncludeDir.modcore = OpenBarnyardDir .. "/SDK/BYModCore/Include"
+IncludeDir.openbarnyard = OpenBarnyardDir .. "/OpenBarnyard/Source"
+IncludeDir.tracy = OpenBarnyardDir .. "/Utils/TracyProfiler/Source"
+IncludeDir.curl = OpenBarnyardDir .. "/Toshi/Vendor/curl/include"
+IncludeDir.minhook = OpenBarnyardDir .. "/Toshi/Vendor/minhook/include"
+IncludeDir.imgui = OpenBarnyardDir .. "/Toshi/Vendor/imgui"
+IncludeDir.directxtex = OpenBarnyardDir .. "/Toshi/Vendor/DirectXTex"
+
+LibDir = {}
+LibDir.fmod = OpenBarnyardDir .. "/Toshi/Vendor/fmod/lib"
+LibDir.dx8 = OpenBarnyardDir .. "/Toshi/Vendor/DX81/lib"
+LibDir.bink = OpenBarnyardDir .. "/Toshi/Vendor/bink/lib"
+LibDir.detours = OpenBarnyardDir .. "/SDK/Vendor/Detours/lib"
+LibDir.glew = OpenBarnyardDir .. "/Toshi/Vendor/glew/lib"
+LibDir.sdl2 = OpenBarnyardDir .. "/Toshi/Vendor/sdl2/lib"
+LibDir.libssl = OpenBarnyardDir .. "/Toshi/Vendor/libssl/lib"
+LibDir.curl = OpenBarnyardDir .. "/Toshi/Vendor/curl/lib"
+
+-- content of these folders should be copied to any client application
+ClientContentCommon = OpenBarnyardDir .. "/Content/Common/"
+ClientContentArch   = OpenBarnyardDir .. "/Content"
+
+-- modify paths based on architecture
+LibDir.fmod = LibDir.fmod .. "/" .. _OPTIONS["arch"] .. "/"
+LibDir.bink = LibDir.bink .. "/" .. _OPTIONS["arch"] .. "/"
+LibDir.detours = LibDir.detours .. "/" .. _OPTIONS["arch"] .. "/"
+ClientContentArch = ClientContentArch .. "/" .. _OPTIONS["arch"] .. "/"
+-- Legacy SDK headers and x86 import libraries are provided by the developer.
+local legacySdk = os.getenv("BARNYARD_LEGACY_SDK")
+if legacySdk then
+    IncludeDir.fmod = legacySdk .. "/fmod/include"
+    LibDir.fmod = legacySdk .. "/fmod/lib/x86"
+    IncludeDir.bink = legacySdk .. "/bink/include"
+    LibDir.bink = legacySdk .. "/bink/lib/x86"
+end

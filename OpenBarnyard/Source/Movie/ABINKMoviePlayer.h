@@ -1,0 +1,94 @@
+#pragma once
+#include "AMoviePlayer.h"
+#include "GUI/AGUI2.h"
+#include "GUI/T2GUIMaterial.h"
+
+#include "Render/TBackend.h"
+
+#include <bink.h>
+
+class ABINKMoviePlayer : public AMoviePlayer
+{
+public:
+	TDECLARE_CLASS( ABINKMoviePlayer, AMoviePlayer );
+
+public:
+	~ABINKMoviePlayer();
+
+private:
+	struct Rect
+	{
+		TINT                  iPosX;
+		TINT                  iPosY;
+		TINT                  iWidth;
+		TINT                  iHeight;
+		Toshi::TVector2       Pos1;
+		Toshi::TVector2       Pos2;
+		Toshi::TVector2       UV1;
+		Toshi::TVector2       UV2;
+		Toshi::T2GUIMaterial* pMaterial = TNULL;
+		Toshi::TTexture*      pTexture  = TNULL;
+		TUINT8*               pData     = TNULL;
+
+		// $Barnyard: FUNCTION 00605820
+		Rect() {}
+		~Rect();
+
+		TBOOL Create( int a_iPosX, int a_iPosY, int a_iWidth, int a_iHeight, TFLOAT a_iRenderPos1X, TFLOAT a_iRenderPos1Y, TFLOAT a_iRenderWidth, TFLOAT a_iRenderHeight, Toshi::TTEXTURERESOURCEFORMAT a_eFormat );
+	};
+
+public:
+	ABINKMoviePlayer();
+
+	virtual TBOOL OnCreate() override;
+	virtual TBOOL OnUpdate( TFLOAT a_fDeltaTime ) override;
+	virtual void  OnDestroy() override;
+
+	virtual TBOOL PlayMovie( const TCHAR* a_szFileName, PLAYFLAGS a_eFlags ) override;
+	virtual void  StopMovie() override;
+	virtual void  PauseMovie( TBOOL a_bPause ) override;
+	virtual TBOOL IsMoviePlaying() override;
+	virtual TBOOL IsMoviePaused() override;
+	virtual void  Render( TFLOAT a_fDeltaTime ) override;
+	virtual void  SetMovieFile( const TCHAR* a_szFile );
+
+private:
+	TBOOL CreateSurfaces();
+#if defined( TRENDERINTERFACE_DX8 )
+	TBOOL CreateAGUISurfaces( TUINT a_uiWidth, TUINT a_uiHeight, D3DFORMAT a_eFormat );
+#elif defined( TRENDERINTERFACE_DX11 )
+	TBOOL CreateAGUISurfaces( TUINT a_uiWidth, TUINT a_uiHeight, DXGI_FORMAT a_eFormat );
+#elif defined( TRENDERINTERFACE_GL )
+	TBOOL CreateAGUISurfaces( TUINT a_uiWidth, TUINT a_uiHeight );
+#endif
+
+	void DestroySurfaces();
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+	// Makes the scales of the video (screen units per video pixel) equal: it keeps its aspect, centred, with black bars
+	void KeepAspect( TFLOAT& a_rScaleX, TFLOAT& a_rScaleY );
+#endif
+
+private:
+	HBINK              m_Bink;
+	TBOOL              m_bPlaying;
+	TBOOL              m_bPaused;
+	TBOOL              m_bVisible;
+	TCHAR              m_szMoviePath[ 64 ];
+#if defined( TRENDERINTERFACE_DX8 )
+	IDirect3DSurface8* m_pSurface;
+#elif defined( TRENDERINTERFACE_DX11 )
+	ID3D11Texture2D* m_pSurface;
+#elif defined( TRENDERINTERFACE_GL )
+	void* m_pSurface; // the frames always go through a texture
+#endif
+	TUINT              m_eFormat;
+	TBOOL              m_bVideoFitsBackBuffer;
+	Rect*              m_pRects;
+	TINT               m_iNumRects;
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+	// The video doesn't cover the screen (see KeepAspect): the screen is cleared to black under it
+	TBOOL m_bBars = TFALSE;
+#endif
+};

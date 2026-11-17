@@ -1,0 +1,174 @@
+#include "pch.h"
+#include "ATerrainLocator.h"
+#include "Helpers/ATreeManager.h"
+#include "Helpers/AInstanceManager.h"
+#include "Helpers/ARegrowthManager.h"
+#include "Helpers/AInstanceLightingHelper.h"
+
+//-----------------------------------------------------------------------------
+// Enables memory debugging.
+// Note: Should be the last include!
+//-----------------------------------------------------------------------------
+#include <Core/TMemoryDebugOn.h>
+
+TOSHI_NAMESPACE_USING
+
+// $Barnyard: FUNCTION 005ec800
+ATerrainLocatorList::ATerrainLocatorList()
+    : m_pTRB( TNULL )
+    , m_pLocatorsHeader( TNULL )
+    , m_pLocatorVISHeader( TNULL )
+    , m_uiRegrowthGroup( 0 )
+{
+	m_oWorldTransform.SetMatrix( TMatrix44{
+	    1.0f,
+	    0.0f,
+	    0.0f,
+	    0.0f,
+	    0.0f,
+	    0.0f,
+	    1.0f,
+	    0.0f,
+	    0.0f,
+	    -1.0f,
+	    0.0f,
+	    0.0f,
+	    0.0f,
+	    0.0f,
+	    0.0f,
+	    1.0f,
+	} );
+}
+
+// $Barnyard: FUNCTION 005eca30
+ATerrainLocatorList::~ATerrainLocatorList()
+{
+	ATreeManager::GetSingleton()->DestroyInstances( this );
+
+	if ( m_uiRegrowthGroup != 0 )
+	{
+		ARegrowthManager::GetSingleton()->DestroyGroup( m_uiRegrowthGroup );
+		m_uiRegrowthGroup = 0;
+	}
+
+	AInstanceManager::GetSingleton()->DestroyInstances( this );
+
+	AInstanceLightingHelper::GetSingleton()->DestroySpheres( this );
+
+	// The skeleton TRB (see ATerrainVIS::LoadSkeleton)
+	if ( m_pTRB )
+		delete m_pTRB;
+}
+
+// $Barnyard: FUNCTION 005ec8b0
+ATerrainLocator* ATerrainLocatorList::FindLocator( const TCHAR* a_pszLocatorName )
+{
+	TVALIDPTR( m_pLocatorsHeader );
+
+	if ( m_pLocatorVISHeader == TNULL )
+	// No VIS data is provided, look for all the locators
+	{
+		for ( TINT i = 0; i < m_pLocatorsHeader->iNumLocators; i++ )
+		{
+			ATerrainLocator* pLocator = &m_pLocatorsHeader->pLocators[ i ];
+
+			if ( !TStringManager::String8CompareNoCase( m_pLocatorsHeader->ppNames[ pLocator->uiNameId ], a_pszLocatorName ) )
+				return &m_pLocatorsHeader->pLocators[ i ];
+		}
+	}
+	else
+	// We have VIS data, so it's easier to find the locator using binary search
+	{
+		for ( TINT i = 0; i < m_pLocatorVISHeader->iNumSections; i++ )
+		{
+			ATerrainLocatorVISSection* pSection = &m_pLocatorVISHeader->pSections[ i ];
+
+			// Do binary search (the names are sorted case-insensitively, retail compares with stricmp)
+			TUINT uiBase    = pSection->uiFirstLocator;
+			TUINT uiEnd     = uiBase + pSection->uiNumLocators;
+			TUINT uiCurrent = ( ( uiEnd - uiBase ) / 2 ) + uiBase;
+
+			while ( uiBase <= uiCurrent && uiCurrent < uiEnd )
+			{
+				ATerrainLocator* pLocator = &m_pLocatorsHeader->pLocators[ uiCurrent ];
+				TINT             iCmpRes  = TStringManager::String8CompareNoCase( m_pLocatorsHeader->ppNames[ pLocator->uiNameId ], a_pszLocatorName );
+
+				if ( iCmpRes == 0 ) return pLocator;
+
+				if ( iCmpRes < 1 )
+				// Check the right side of array
+				{
+					uiBase    = uiCurrent + 1;
+					uiCurrent = ( ( uiEnd - uiBase ) / 2 ) + uiBase;
+				}
+				else
+				// Check the left side of array
+				{
+					uiEnd     = uiCurrent;
+					uiCurrent = ( ( uiCurrent - uiBase ) / 2 ) + uiBase;
+				}
+			}
+		}
+	}
+
+	return TNULL;
+}
+
+// $Barnyard: FUNCTION 005ecad0
+void ATerrainLocatorList::LoadFromTRB( TTRB* a_pTRB )
+{
+	m_pTRB              = a_pTRB;
+	m_pLocatorsHeader   = a_pTRB->CastSymbol<ATerrainLocatorTRBHeader>( "Locators" );
+	m_pLocatorVISHeader = a_pTRB->CastSymbol<ATerrainLocatorVISTRBHeader>( "LocatorVIS" );
+
+	TASSERT( m_pLocatorsHeader && m_pLocatorVISHeader );
+
+	ATreeManager::GetSingleton()->CreateInstances( this );
+	m_uiRegrowthGroup = ARegrowthManager::GetSingleton()->CreateFromLocators( this );
+	AInstanceManager::GetSingleton()->CreateInstances( this );
+
+	AInstanceLightingHelper::GetSingleton()->CreateSpheres( this );
+}
+
+// $Barnyard: FUNCTION 005eca20
+TINT ATerrainLocatorList::GetNumVISSections() const
+{
+	return ( m_pLocatorVISHeader ) ? m_pLocatorVISHeader->iNumSections : 0;
+}
+
+// $Barnyard: FUNCTION 005ec9f0
+void ATerrainLocator::GetMatrix( Toshi::TMatrix44& a_rOutMatrix ) const
+{
+	a_rOutMatrix.SetFromQuaternion( quatRotation );
+	a_rOutMatrix.AsBasisVector3( BASISVECTOR_TRANSLATION ) = vecPosition;
+}
+
+TBOOL ATerrainLocatorList::FindClosestLocatorXZ( TFLOAT a_fX, TFLOAT a_fZ, TFLOAT a_fMaxDistance, TVector4& a_rOutPosition )
+{
+	if ( !m_pLocatorsHeader )
+		return TFALSE;
+
+	TMatrix44 oWorld;
+	m_oWorldTransform.GetLocalMatrixImp( oWorld );
+
+	TFLOAT fClosestSq = a_fMaxDistance * a_fMaxDistance;
+	TBOOL  bFound     = TFALSE;
+
+	for ( TINT i = 0; i < m_pLocatorsHeader->iNumLocators; i++ )
+	{
+		TVector3 vWorld;
+		TMatrix44::TransformVector( vWorld, oWorld, m_pLocatorsHeader->pLocators[ i ].vecPosition );
+
+		TFLOAT fDX = vWorld.x - a_fX;
+		TFLOAT fDZ = vWorld.z - a_fZ;
+
+		if ( fDX * fDX + fDZ * fDZ < fClosestSq )
+		{
+			fClosestSq     = fDX * fDX + fDZ * fDZ;
+			a_rOutPosition = TVector4( vWorld.x, vWorld.y, vWorld.z, 1.0f );
+			bFound         = TTRUE;
+		}
+	}
+
+	return bFound;
+}

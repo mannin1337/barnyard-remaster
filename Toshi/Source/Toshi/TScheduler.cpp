@@ -1,0 +1,197 @@
+#include "ToshiPCH.h"
+#include "TScheduler.h"
+#include "TSystem.h"
+#include "TTask.h"
+
+//-----------------------------------------------------------------------------
+// Enables memory debugging.
+// Note: Should be the last include!
+//-----------------------------------------------------------------------------
+#include "Core/TMemoryDebugOn.h"
+
+TOSHI_NAMESPACE_START
+
+TFLOAT TScheduler::s_MaxTimeDeltaAllowed          = 0.25f;
+TFLOAT TScheduler::s_DebugSlowMaxTimeDeltaAllowed = 0.005f;
+
+// $Barnyard: FUNCTION 006bccd0
+TScheduler::TScheduler()
+{
+	m_DeltaTime             = 0.0f;
+	m_TotalTime             = 0.0f;
+	m_MaxDeltaTime          = 0.25f;
+	m_uiNumFrames           = 0;
+	m_fnDeltaTimeCalculator = TNULL;
+	m_UseDebugDeltaTime     = TFALSE;
+	m_DebugDeltaTime        = 0.01f;
+	m_UseDebugDeltaTimeMult = TFALSE;
+	m_DebugDeltaTimeMult    = 1.0f;
+}
+
+// $Barnyard: FUNCTION 006bcdf0
+// $Barnyard: FUNCTION 006bce40
+TScheduler::~TScheduler()
+{
+	DestroyAllTasks();
+}
+
+// $Barnyard: FUNCTION 006bcbf0
+TTask* TScheduler::CreateTask( TClass* pClass, TTask* pParent )
+{
+	TASSERT( pClass->IsA( &TGetClass( TTask ) ) );
+
+	TTask* pTask = static_cast<TTask*>( pClass->CreateObject() );
+	TASSERT( pTask != TNULL );
+
+	m_TaskTree.InsertAtRootHead( pTask );
+
+	if ( pParent != TNULL )
+	{
+		m_TaskTree.Remove( pTask, TFALSE );
+		m_TaskTree.Insert( pParent, pTask );
+	}
+
+	return pTask;
+}
+
+void TScheduler::Update()
+{
+	if ( !g_oSystemManager.ms_bWasEverUpdated )
+	{
+		g_oSystemManager.ms_bWasEverUpdated = TTRUE;
+	}
+
+	TFLOAT fDeltaTime = g_oSystemManager.GetTimer().GetDelta();
+	m_DeltaTime       = fDeltaTime;
+	m_TotalTime += fDeltaTime;
+	m_uiNumFrames += 1;
+
+	// Control delta time
+	if ( m_DeltaTime >= 0.0f )
+	{
+		if ( m_DeltaTime >= m_MaxDeltaTime )
+		{
+			m_DeltaTime = m_MaxDeltaTime;
+		}
+	}
+	else
+	{
+		m_DeltaTime = 0.0f;
+	}
+
+	if ( m_fnDeltaTimeCalculator )
+	{
+		m_DeltaTime = m_fnDeltaTimeCalculator( m_DeltaTime );
+	}
+
+	if ( m_UseDebugDeltaTime )
+	{
+		m_DeltaTime = m_DebugDeltaTime;
+	}
+
+	if ( m_UseDebugDeltaTimeMult )
+	{
+		m_DeltaTime *= m_DebugDeltaTimeMult;
+	}
+
+	DestroyDyingTasks( m_TaskTree.ChildOfRoot() );
+	UpdateActiveTasks( m_TaskTree.ChildOfRoot() );
+}
+
+// $Barnyard: FUNCTION 006bcb40
+void TScheduler::DeleteTaskAtomic( TTask* task )
+{
+	if ( task != TNULL )
+	{
+		TTask* taskParent = TNULL;
+
+		if ( task->IsChildOfDefaultRoot() == TFALSE )
+		{
+			taskParent = task->Parent();
+
+			if ( taskParent->IsDying() == TFALSE && taskParent->OnChildDying( task ) == TFALSE )
+			{
+				// The parent is not dying and doesn't allow us to kill the task
+				return;
+			}
+		}
+
+		if ( task->Child() != TNULL )
+		{
+			DeleteTaskRecurse( task->Child() );
+		}
+
+		const TClass* pClass = task->GetClass();
+		task->OnDestroy();
+		m_TaskTree.Remove( task, TFALSE );
+		task->Delete();
+
+		if ( taskParent != TNULL )
+		{
+			taskParent->OnChildDied( pClass, task );
+		}
+	}
+}
+
+// $Barnyard: FUNCTION 006bcc80
+void TScheduler::DestroyDyingTasks( TTask* task )
+{
+	if ( task != TNULL )
+	{
+		TTask* currentTask = task->Prev();
+
+		while ( currentTask != TNULL )
+		{
+			// Go from the last task to the first one (task)
+			TTask* nextTask = ( currentTask != task ) ? currentTask->Prev() : TNULL;
+
+			if ( !currentTask->IsDying() )
+			{
+				if ( currentTask->Child() != TNULL )
+				{
+					DestroyDyingTasks( currentTask->Child() );
+				}
+			}
+			else
+			{
+				DeleteTask( currentTask );
+			}
+
+			currentTask = nextTask;
+		}
+	}
+}
+
+// $Barnyard: FUNCTION 006bca20
+void TScheduler::UpdateActiveTasks( TTask* task )
+{
+	TTask* currentTask = task;
+
+	while ( currentTask != TNULL )
+	{
+		TTask* nextTask = ( currentTask->Next() != task ) ? currentTask->Next() : TNULL;
+
+		TBOOL recurse = TTRUE;
+		if ( currentTask->IsCreated() && currentTask->IsActive() )
+		{
+			recurse = currentTask->OnUpdate( m_DeltaTime );
+		}
+
+		if ( currentTask->Child() != TNULL && recurse )
+		{
+			UpdateActiveTasks( currentTask->Child() );
+		}
+
+		currentTask = nextTask;
+	}
+}
+
+// $Barnyard: FUNCTION 006bca00
+void TScheduler::SetDebugDeltaTimeMult( TBOOL useDebugDeltaTimeMult, TFLOAT debugDeltaTimeMult /*= 1.0f */ )
+{
+	m_UseDebugDeltaTimeMult = useDebugDeltaTimeMult;
+	m_DebugDeltaTimeMult    = debugDeltaTimeMult;
+	TMath::Clip( m_DebugDeltaTimeMult, 0.0f, 100.0f );
+}
+
+TOSHI_NAMESPACE_END

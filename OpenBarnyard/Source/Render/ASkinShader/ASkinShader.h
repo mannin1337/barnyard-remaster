@@ -1,0 +1,54 @@
+#pragma once
+#include <Render/TShader.h>
+#include <Toshi/TSingleton.h>
+
+class ASkinMaterial;
+class ASkinMesh;
+
+class MODAPI ASkinShader : public Toshi::TShader
+    , public Toshi::TSingleton<ASkinShader>
+{
+public:
+	TDECLARE_CLASS( ASkinShader, Toshi::TShader );
+
+public:
+	ASkinShader();
+	~ASkinShader();
+
+	//-----------------------------------------------------------------------------
+	// Own methods
+	//-----------------------------------------------------------------------------
+	virtual void           EnableRenderEnvMap( TBOOL a_bEnable );
+	virtual TBOOL          IsHighEndSkinning();
+	virtual void           EnableHighEndSkinning( TBOOL a_bEnable );
+	virtual TBOOL          IsCapableHighEndSkinning();
+	virtual TBOOL          IsLightScattering();
+	virtual void           SetLightScattering( TBOOL a_bEnable );
+	virtual TBOOL          IsAlphaBlendMaterial();
+	virtual void           SetAlphaBlendMaterial( TBOOL a_bIsAlphaBlendMaterial );
+	virtual ASkinMaterial* CreateMaterial( const TCHAR* a_szName )                                            = 0;
+	virtual ASkinMesh*     CreateMesh( const TCHAR* a_szName )                                                = 0;
+	virtual TINT           AddLight( const Toshi::TVector3& a_rPosition, TFLOAT a_fIntensity )                = 0;
+	virtual void           SetLight( TINT a_iIndex, const Toshi::TVector3& a_rPosition, TFLOAT a_fIntensity ) = 0;
+	virtual void           RemoveLight( TINT a_iIndex )                                                       = 0;
+	virtual void           EnableClouds( TBOOL a_bEnabled );
+	virtual TBOOL          IsEnabledClouds();
+	virtual TBOOL          IsCapablePointLights();
+	virtual void           SetPointLights( TBOOL a_bEnabled );
+	virtual TBOOL          IsPointLightsEnabled();
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+	// Console render.low_end_skin: the DX8 shader uses the low end (CPU skinning) path
+	inline static TINT ms_iForceLowEndSkinning = 0;
+#endif
+
+protected:
+	union
+	{
+		TUINT8 m_SomeColourComponents[ 8 ];
+		TINT32 m_SomeColour;
+	};
+	TINT   m_Unk2;
+	TFLOAT m_Unk3;
+	TINT   m_Unk4;
+};

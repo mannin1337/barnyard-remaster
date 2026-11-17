@@ -1,0 +1,110 @@
+#pragma once
+#include "ABYardMenuState.h"
+#include "Helpers/AWindmillHelper.h"
+#include "GUI/AGUI2Button.h"
+#include "GUI/AFade.h"
+#include "AMessagePopupState.h"
+
+class MODAPI AFrontEndMainMenuState2 : public ABYardMenuState
+{
+public:
+	TDECLARE_CLASS( AFrontEndMainMenuState2, ABYardMenuState );
+
+	enum FRONTENDBUTTON
+	{
+		FRONTENDBUTTON_NEWGAME,
+		FRONTENDBUTTON_LOADGAME,
+#ifdef BARNYARD_COMMUNITY_PATCH
+		// NOTE: not in retail, opens the Co-op menu (AFrontEndCoopState)
+		FRONTENDBUTTON_COOP,
+#endif
+		FRONTENDBUTTON_OPTIONS,
+		FRONTENDBUTTON_BONUSES,
+		FRONTENDBUTTON_ANTICS,
+		FRONTENDBUTTON_QUIT,
+		FRONTENDBUTTON_NUMOF
+	};
+
+	inline constexpr static TINT FRONTENDBUTTON_TEXTS[ FRONTENDBUTTON_NUMOF ] = {
+		292,
+		293,
+#ifdef BARNYARD_COMMUNITY_PATCH
+		-1, // FRONTENDBUTTON_COOP has no locale string (the button shows GetButtonText)
+#endif
+		294,
+		296,
+		298,
+		333
+	};
+
+public:
+	// constructors/destructor
+	AFrontEndMainMenuState2( AWindmillHelper* a_pWindmillHelper = TNULL, TBOOL a_bFlag = TFALSE );
+	~AFrontEndMainMenuState2();
+
+	TBOOL StartIntroVideo();
+
+	// Sets camera to it's position it should have in front end
+	static void SetupCamera();
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+	// For a mod replacing the state before it's inserted: the windmill it was given and the flag
+	AWindmillHelper* GetWindmillHelper() const { return m_pWindmillHelper; }
+	TBOOL            GetFlag() const { return m_bFlag; }
+
+	// The class of a mod's state that replaces the main menu
+	inline static Toshi::TClass* ms_pReplacementClass = TNULL;
+
+	// Whether the main menu (or its replacement) is the current state, for the development switches
+	static TBOOL IsCurrent();
+#endif
+
+	//-----------------------------------------------------------------------------
+	// AGameState
+	//-----------------------------------------------------------------------------
+	virtual TBOOL ProcessInput( const Toshi::TInputInterface::InputEvent* a_pInputEvent ) OVERRIDE;
+	virtual TBOOL ProcessCommand( AInputCommand a_eInputCommand, const Toshi::TInputInterface::InputEvent* a_pInputEvent, TBOOL& a_rStopEvents ) OVERRIDE;
+	virtual TBOOL OnUpdate( TFLOAT a_fDeltaTime ) OVERRIDE;
+	virtual void  OnInsertion() OVERRIDE;
+	virtual void  OnRemoval() OVERRIDE;
+	virtual void  OnActivate() OVERRIDE;
+	virtual void  OnDeactivate() OVERRIDE;
+
+	//-----------------------------------------------------------------------------
+	// ABYardMenuState
+	//-----------------------------------------------------------------------------
+	virtual void OnMenuItemActivated( AGUI2MenuItem* a_pMenuItem ) OVERRIDE;
+	virtual void OnMenuItemFocused( AGUI2MenuItem& a_rOldFocus, AGUI2MenuItem& a_rNewFocus ) OVERRIDE {} // +0x70, DOES_NOTHING
+	virtual void OnMenuClose() OVERRIDE;
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+	// Shows the button texts of the current language (AFrontEndLanguageState). Not on PC
+	void UpdateTexts();
+#else
+	void UpdateTexts() {}
+#endif
+
+private:
+	// Quits the game if Yes was chosen in the quit popup
+	static TBOOL __stdcall OnQuitPopupResponse( AFrontEndMainMenuState2* a_pState, AMessagePopupState* a_pPopup, AMessagePopupState::ResponseEvent* a_pEvent );
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+	// The text of a button: its locale string, the Co-op button has the same text in every language
+	static const TWCHAR* GetButtonText( TINT a_iButton );
+#endif
+
+public:
+	inline static TBOOL  ms_bIsInserted       = TFALSE;
+	inline static TFLOAT ms_fPlayIntroAFKTime = 30.0f;
+
+private:
+	AGUI2Button                                                                                      m_aButtons[ FRONTENDBUTTON_NUMOF ];
+	TINT                                                                                             m_iActivatedButtonID;
+	Toshi::T2GUIRectangle                                                                            m_Rectangle1;
+	Toshi::T2GUIRectangle                                                                            m_Rectangle2;
+	Toshi::TListener<AMessagePopupState, AMessagePopupState::ResponseEvent, AFrontEndMainMenuState2> m_oQuitPopupListener;
+	AWindmillHelper*                                                                                 m_pWindmillHelper;
+	TBOOL                                                                                            m_bFlag;
+	TFLOAT                                                                                           m_fAFKTime;
+	Toshi::TListener<AFade, TBOOL, AFrontEndMainMenuState2>                                          m_oFadeOverListener;
+};

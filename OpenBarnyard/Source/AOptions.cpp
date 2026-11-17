@@ -1,0 +1,574 @@
+#include "pch.h"
+
+#ifdef TOSHI_SKU_WASM
+#  include <Platform/WASM/TWindow_WASM.h>
+#endif
+
+#include "AOptions.h"
+#include "Locale/ALocaleManager.h"
+#include "Sound/ASoundManager.h"
+#include "Sound/AMultiplexStream.h"
+#include "Input/AInputHandler.h"
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+#  include "AGraphicsSettings.h"
+#endif // BARNYARD_COMMUNITY_PATCH
+
+#ifdef BARNYARD_LATEST
+#  include "GameInterface/ACameraOptionsState.h"
+#  include "GameInterface/SaveLoadSKU.h"
+#  include "Helpers/AGameLoader.h"
+
+#  include <direct.h>
+#endif // BARNYARD_LATEST
+
+#include <windows.h>
+
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_SKU_WASM )
+#  include <Platform/Windows/Input/TInputDeviceMouse_Win.h>
+#endif
+
+//-----------------------------------------------------------------------------
+// Enables memory debugging.
+// Note: Should be the last include!
+//-----------------------------------------------------------------------------
+#include <Core/TMemoryDebugOn.h>
+
+TOSHI_NAMESPACE_USING
+
+TPSTRING8_DECLARE( Music );
+TPSTRING8_DECLARE( VO );
+TPSTRING8_DECLARE( Ingame );
+
+// NOTE: GetClass 00662d60, CreateObject 00663360, CreateObjectInPlace 006633c0
+TDEFINE_CLASS( AOptions );
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+TBOOL  AOptions::ms_bBorderless            = TFALSE;
+TBOOL  AOptions::ms_bRawMouseInput         = TTRUE;
+TFLOAT AOptions::ms_fControllerSensitivity = 0.5f;
+TINT AOptions::ms_iPadIcons = AOptions::PADICONS_AUTO;
+
+T2Locale::Lang AOptions::ms_eLanguageSetting = ALocaleManager::Lang_UNKNOWN;
+#endif // BARNYARD_COMMUNITY_PATCH
+
+// $Barnyard: FUNCTION 006632d0
+AOptions::AOptions()
+{
+	m_eUpdatedSettings = UpdatedSettings_None;
+	m_iUnk04           = 1;
+	m_iSfxVolume       = 204;
+	m_iMusicVolume     = 128;
+	m_iVOVolume        = 128;
+	m_eLanguage        = ALocaleManager::Lang_UNKNOWN;
+	m_eFlags           = Flags_Rumble;
+
+	ReloadSettings();
+
+#ifdef BARNYARD_LATEST
+	m_uiCameraSpeed         = CAMERA_SPEED_DEFAULT;
+	m_bWiiStyleCamera       = TTRUE;
+	m_bFollowJumpsCamera    = TFALSE;
+	m_bEasyDifficulty       = TFALSE;
+	m_bExtraSettingsChanged = TFALSE;
+
+#  ifdef BARNYARD_COMMUNITY_PATCH
+	// "-devsavefile <path>" also moves OpenBarnyard.cfg, set it up before it's read
+	AGameLoader::Dev_SetupSaveFileAtBoot();
+#  endif // BARNYARD_COMMUNITY_PATCH
+
+	LoadExtraSettings();
+#endif // BARNYARD_LATEST
+}
+
+// $Barnyard: FUNCTION 00662e70
+// $Barnyard: FUNCTION 00663140
+AOptions::~AOptions()
+{
+#ifdef BARNYARD_LATEST
+	// The game is closing, write the extra settings if they couldn't be written when they changed
+	if ( m_bExtraSettingsChanged )
+		WriteExtraSettings();
+#endif // BARNYARD_LATEST
+}
+
+// $Barnyard: FUNCTION 00663160
+TBOOL AOptions::ApplySettings()
+{
+
+	if ( m_eUpdatedSettings & UpdatedSettings_Audio )
+	{
+		ASoundManager* pSoundManager = ASoundManager::GetSingleton();
+		pSoundManager->SetCategoryVolume( TPS8( Music ), m_iMusicVolume * ( 1.0f / 255.0f ), 0.0f );
+		pSoundManager->SetCategoryVolume( TPS8( VO ), m_iVOVolume * ( 1.0f / 255.0f ), 0.0f );
+		pSoundManager->SetCategoryVolume( TPS8( Ingame ), m_iSfxVolume * ( 1.0f / 255.0f ), 0.0f );
+
+		// Apply the new volume to the music of the main game
+		AMultiplexStream* pMultiplexStream = AMultiplexStream::IsSingletonCreated() ? AMultiplexStream::GetSingleton() : TNULL;
+
+		if ( pMultiplexStream && pMultiplexStream->GetState() == AMultiplexStream::STATE_PLAYING )
+		{
+			for ( TINT i = 0; i < pMultiplexStream->GetNumSubChannels(); i++ )
+				pMultiplexStream->SetVolume( pMultiplexStream->GetVolume( i ), i, TTRUE );
+		}
+	}
+
+	if ( m_eUpdatedSettings & UpdatedSettings_Language )
+	{
+#ifdef BARNYARD_COMMUNITY_PATCH
+		// The language picked in Options -> Language (the registry) goes before the one of the save
+		T2Locale::Lang eLanguage = ( ms_eLanguageSetting != ALocaleManager::Lang_UNKNOWN ) ? ms_eLanguageSetting : m_eLanguage;
+
+		if ( !ALocaleManager::IsLanguageSupported( eLanguage ) )
+			eLanguage = ALocaleManager::Lang_EnglishUK;
+
+		// A language without its file (Data/Locale/hun.trb) gets the texts of the language of its assets
+		if ( !g_pLocaleManager->SetLanguage( eLanguage ) )
+			g_pLocaleManager->SetLanguage( ALocaleManager::GetAssetLanguage( eLanguage ) );
+
+		// The save keeps the language of the assets
+		m_eLanguage = g_pLocaleManager->GetLanguage();
+#else
+		g_pLocaleManager->SetLanguage( ALocaleManager::Lang_EnglishUK );
+		m_eLanguage = ALocaleManager::Lang_EnglishUK;
+#endif
+	}
+
+	if ( m_eUpdatedSettings & UpdatedSettings_Input )
+	{
+		AInputHandler::GetSingleton()->SetRumbleEnabled( IsRumbleEnabled() );
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_SKU_WASM )
+		TInputDXDeviceMouse::SetRawInputEnabled( ms_bRawMouseInput );
+#endif
+	}
+
+	m_eUpdatedSettings = UpdatedSettings_None;
+	return TTRUE;
+}
+
+// $Barnyard: FUNCTION 00662eb0
+void AOptions::LoadSettings()
+{
+	m_fGamma             = 0.420849f;
+#ifdef TOSHI_SKU_WASM
+	TWindow_WASM::GetPageSize( m_iWidth, m_iHeight );
+#elif defined( BARNYARD_COMMUNITY_PATCH )
+	// NOTE: retail starts at 800x600 until the launcher saves a size. If the display has no 1920x1080 the
+	// renderer takes the size of the desktop (ARenderer::CreateTRender)
+	m_iWidth             = 1920;
+	m_iHeight            = 1080;
+#else
+	m_iWidth             = 800;
+	m_iHeight            = 600;
+#endif
+	m_fSensitivity       = 0.5f;
+	m_bHighDetailGrass   = TTRUE;
+#ifdef BARNYARD_COMMUNITY_PATCH
+	ms_bRawMouseInput         = TTRUE;
+	ms_fControllerSensitivity = 0.5f;
+	ms_iPadIcons = PADICONS_AUTO;
+	m_bControllerEnabled = TTRUE;
+#else
+	m_bControllerEnabled = TFALSE;
+#endif
+	m_bForcedWindowed    = TFALSE;
+
+#ifdef TOSHI_SKU_WASM
+	if ( strstr( GetCommandLineA(), "-lowgrass" ) )
+		m_bHighDetailGrass = TFALSE;
+#endif
+
+	HKEY hKey;
+
+	if ( ERROR_SUCCESS == RegOpenKeyExA( HKEY_CURRENT_USER, "Software\\THQ\\Barnyard", 0, KEY_READ, &hKey ) )
+	{
+		CHAR  szBuffer[ 512 ];
+		DWORD dwType = REG_NONE;
+		DWORD dwData = 0;
+		DWORD dwSize = sizeof( dwData );
+
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "RealForcedWindowed", NULL, &dwType, (LPBYTE)&dwData, &dwSize ) &&
+		     dwType == REG_DWORD )
+		{
+			m_bForcedWindowed = dwData != FALSE;
+		}
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+		// NOTE: Borderless fullscreen, a windowed mode without a frame
+		dwSize = sizeof( dwData );
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "Borderless", NULL, &dwType, (LPBYTE)&dwData, &dwSize ) &&
+		     dwType == REG_DWORD )
+		{
+			ms_bBorderless = dwData != FALSE;
+		}
+#endif // BARNYARD_COMMUNITY_PATCH
+
+		dwSize = sizeof( dwData );
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "HighDetailGrass", NULL, &dwType, (LPBYTE)&dwData, &dwSize ) &&
+		     dwType == REG_DWORD )
+		{
+			m_bHighDetailGrass = dwData != FALSE;
+		}
+
+		dwSize = sizeof( szBuffer );
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "Gamma", NULL, &dwType, (LPBYTE)szBuffer, &dwSize ) &&
+		     dwType == REG_SZ )
+		{
+			dwSize -= 1;
+			TMath::Clip( dwSize, (DWORD)0, (DWORD)16 );
+
+			for ( DWORD i = 0; i < dwSize; i++ )
+			{
+				if ( szBuffer[ i ] == ',' )
+				{
+					szBuffer[ i ] = '.';
+				}
+			}
+
+			m_fGamma = TStringManager::String8ToFloat( szBuffer );
+			TMath::Clip( m_fGamma, 0.0f, 1.0f );
+		}
+
+		TINT iWidth = 0;
+		dwSize      = sizeof( iWidth );
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "Width", NULL, &dwType, (LPBYTE)&dwData, &dwSize ) &&
+		     dwType == REG_DWORD )
+		{
+			iWidth = dwData;
+		}
+
+		TINT iHeight = 0;
+		dwSize       = sizeof( iHeight );
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "Height", NULL, &dwType, (LPBYTE)&dwData, &dwSize ) &&
+		     dwType == REG_DWORD )
+		{
+			iHeight = dwData;
+		}
+
+		if ( IsResolutionCompatible( iWidth, iHeight ) )
+		{
+			m_iWidth  = iWidth;
+			m_iHeight = iHeight;
+		}
+
+		dwSize = sizeof( szBuffer );
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "Sensitivity", NULL, &dwType, (LPBYTE)szBuffer, &dwSize ) &&
+		     dwType == REG_SZ )
+		{
+#ifdef BARNYARD_COMMUNITY_PATCH
+			szBuffer[ TMath::Min( dwSize, DWORD( sizeof( szBuffer ) - 1 ) ) ] = '\0';
+			SetSensitivity( TStringManager::String8ToFloat( szBuffer ) );
+#else
+			m_fSensitivity = TStringManager::String8ToFloat( szBuffer );
+			TMath::Clip( m_fSensitivity, 0.0f, 1.0f );
+#endif
+		}
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+		dwSize = sizeof( dwData );
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "RawMouseInput", NULL, &dwType, (LPBYTE)&dwData, &dwSize ) &&
+		     dwType == REG_DWORD && dwSize == sizeof( dwData ) )
+			ms_bRawMouseInput = dwData != 0;
+
+		dwSize = sizeof( dwData );
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "ControllerSensitivity", NULL, &dwType, (LPBYTE)&dwData, &dwSize ) &&
+		     dwType == REG_DWORD && dwSize == sizeof( dwData ) )
+			SetControllerSensitivity( TMath::Min( dwData, DWORD( 100 ) ) / 100.0f );
+
+		dwSize = sizeof( dwData );
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "ControllerIcons", NULL, &dwType, (LPBYTE)&dwData, &dwSize ) &&
+		     dwType == REG_DWORD && dwSize == sizeof( dwData ) && dwData < PADICONS_NUMOF )
+			ms_iPadIcons = TINT( dwData );
+#endif
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+		// The language picked in Options -> Language (a number of ALocaleManager::Lang_)
+		ms_eLanguageSetting = ALocaleManager::Lang_UNKNOWN;
+		dwSize              = sizeof( dwData );
+
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "Language", NULL, &dwType, (LPBYTE)&dwData, &dwSize ) &&
+		     dwType == REG_DWORD && dwSize == sizeof( dwData ) && dwData < DWORD( ALocaleManager::Lang_NUMOF ) )
+		{
+			ms_eLanguageSetting = T2Locale::Lang( dwData );
+			TINFO( "Language: %s (Options -> Language)\n", ALocaleManager::GetLanguageName( ms_eLanguageSetting ) );
+		}
+#endif
+
+		dwSize = sizeof( dwData );
+		if ( ERROR_SUCCESS == RegQueryValueExA( hKey, "ControllerEnabled", NULL, &dwType, (LPBYTE)&dwData, &dwSize ) &&
+		     dwType == REG_DWORD )
+		{
+			m_bControllerEnabled = dwData != FALSE;
+		}
+#ifdef BARNYARD_COMMUNITY_PATCH
+		RegCloseKey( hKey );
+#endif
+	}
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_SKU_WASM )
+	TInputDXDeviceMouse::SetRawInputEnabled( ms_bRawMouseInput );
+#endif
+#ifdef BARNYARD_COMMUNITY_PATCH
+	TINFO( "[input] options: mouse=%.2f raw=%d pad=%.2f (%.2fx)\n",
+	       m_fSensitivity, ms_bRawMouseInput, ms_fControllerSensitivity, GetControllerSensitivityScale() );
+#endif
+}
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+void AOptions::SetRawMouseInput( TBOOL a_bEnabled )
+{
+	ms_bRawMouseInput = a_bEnabled;
+	m_eUpdatedSettings |= UpdatedSettings_Input;
+}
+
+void AOptions::SetControllerSensitivity( TFLOAT a_fSensitivity )
+{
+	if ( !( a_fSensitivity >= 0.1f ) ) a_fSensitivity = 0.1f;
+	if ( a_fSensitivity > 1.0f ) a_fSensitivity = 1.0f;
+	ms_fControllerSensitivity = a_fSensitivity;
+	m_eUpdatedSettings |= UpdatedSettings_Input;
+}
+
+void AOptions::SetPadIcons( TINT a_iIcons )
+{
+	if ( a_iIcons >= PADICONS_AUTO && a_iIcons < PADICONS_NUMOF ) ms_iPadIcons = a_iIcons;
+}
+
+TBOOL AOptions::SaveInputSettings()
+{
+	HKEY hKey;
+	if ( ERROR_SUCCESS != RegCreateKeyExA( HKEY_CURRENT_USER, "Software\\THQ\\Barnyard", 0, NULL, 0,
+	                                      KEY_SET_VALUE, NULL, &hKey, NULL ) )
+		return TFALSE;
+
+	// Decimal text retains compatibility with the original launcher, independent of the locale.
+	const TINT iSensitivity = TINT( m_fSensitivity * 100.0f + 0.5f );
+	CHAR szSensitivity[ 16 ];
+	TStringManager::String8Format( szSensitivity, sizeof( szSensitivity ), "%d.%02d", iSensitivity / 100, iSensitivity % 100 );
+	DWORD dwRawMouse = ms_bRawMouseInput ? 1 : 0;
+	DWORD dwControllerSensitivity = DWORD( ms_fControllerSensitivity * 100.0f + 0.5f );
+	const DWORD dwPadIcons = DWORD( ms_iPadIcons );
+	const LONG iMouseResult = RegSetValueExA( hKey, "Sensitivity", 0, REG_SZ, (const BYTE*)szSensitivity, DWORD( strlen( szSensitivity ) + 1 ) );
+	const LONG iRawResult = RegSetValueExA( hKey, "RawMouseInput", 0, REG_DWORD, (const BYTE*)&dwRawMouse, sizeof( dwRawMouse ) );
+	const LONG iControllerResult = RegSetValueExA( hKey, "ControllerSensitivity", 0, REG_DWORD, (const BYTE*)&dwControllerSensitivity, sizeof( dwControllerSensitivity ) );
+	const LONG iPadIconsResult = RegSetValueExA( hKey, "ControllerIcons", 0, REG_DWORD, (const BYTE*)&dwPadIcons, sizeof( dwPadIcons ) );
+	RegCloseKey( hKey );
+	return iMouseResult == ERROR_SUCCESS && iRawResult == ERROR_SUCCESS && iControllerResult == ERROR_SUCCESS && iPadIconsResult == ERROR_SUCCESS;
+}
+#endif // BARNYARD_COMMUNITY_PATCH
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+TBOOL AOptions::SaveLanguageSetting( T2Locale::Lang a_eLanguage )
+{
+	ms_eLanguageSetting = a_eLanguage;
+
+	// NOTE: the key isn't there before the launcher saved its settings
+	HKEY  hKey;
+	TBOOL bSaved = TFALSE;
+
+	if ( ERROR_SUCCESS == RegCreateKeyExA( HKEY_CURRENT_USER, "Software\\THQ\\Barnyard", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, NULL, &hKey, NULL ) )
+	{
+		const DWORD dwData = DWORD( a_eLanguage );
+		bSaved             = ERROR_SUCCESS == RegSetValueExA( hKey, "Language", 0, REG_DWORD, (const BYTE*)&dwData, sizeof( dwData ) );
+		RegCloseKey( hKey );
+	}
+
+	TINFO( "Language: %s picked%s\n", ALocaleManager::GetLanguageName( a_eLanguage ), bSaved ? ", saved" : ", couldn't be saved" );
+	return bSaved;
+}
+#endif // BARNYARD_COMMUNITY_PATCH
+
+// $Barnyard: FUNCTION 00662d90
+TBOOL AOptions::IsResolutionCompatible( TINT a_iWidth, TINT a_iHeight )
+{
+#ifdef BARNYARD_COMMUNITY_PATCH
+	return a_iWidth > 0 && a_iHeight > 0;
+#else
+	static constexpr struct
+	{
+		TINT iWidth;
+		TINT iHeight;
+	} s_Resolutions[] = {
+		{ 600, 800 },
+		{ 768, 1024 },
+		{ 864, 1152 },
+		{ 1024, 1280 },
+		{ 640, 480 },
+		{ 800, 600 },
+		{ 1024, 768 },
+		{ 1152, 864 },
+		{ 1280, 1024 },
+		{ 1600, 1200 },
+	};
+
+	for ( TSIZE i = 0; i < TARRAYSIZE( s_Resolutions ); i++ )
+	{
+		auto pResolution = &s_Resolutions[ i ];
+
+		if ( a_iWidth == pResolution->iWidth && a_iHeight == pResolution->iHeight )
+		{
+			return TTRUE;
+		}
+	}
+
+	return TFALSE;
+#endif // BARNYARD_COMMUNITY_PATCH
+}
+
+// $Barnyard: FUNCTION 00662d70
+TBOOL AOptions::SaveSettings( void* a_pBuffer, TINT a_iSize )
+{
+	TUtil::MemCopy( a_pBuffer, &m_iUnk04, SAVED_SETTINGS_SIZE );
+	return TTRUE;
+}
+
+// $Barnyard: FUNCTION 00662e90
+TBOOL AOptions::LoadSavedSettings( const void* a_pBuffer, TINT a_iSize )
+{
+#ifdef BARNYARD_COMMUNITY_PATCH
+	// Input preferences belong to this machine; old saves must not undo the registry/UI value.
+	const TFLOAT fMouseSensitivity = m_fSensitivity;
+#endif
+	TUtil::MemCopy( &m_iUnk04, a_pBuffer, SAVED_SETTINGS_SIZE );
+#ifdef BARNYARD_COMMUNITY_PATCH
+	m_fSensitivity = fMouseSensitivity;
+#endif
+	m_eUpdatedSettings = UpdatedSettings_ForceUpdate;
+	return TTRUE;
+}
+
+// $Barnyard: FUNCTION 00663280
+void AOptions::SetLanguage( T2Locale::Lang a_eLanguage )
+{
+	m_eLanguage = a_eLanguage;
+	m_eUpdatedSettings |= UpdatedSettings_Language;
+}
+
+TBOOL AOptions::IsWindowed() const
+{
+#ifdef BARNYARD_COMMUNITY_PATCH
+	// Allow forcing the windowed mode from the command line
+	if ( TStringManager::String8FindString( GetCommandLineA(), "-windowed" ) )
+		return TTRUE;
+
+	// "-background" runs (see TMSWindow::IsBackgroundMode) are always windowed
+	if ( TStringManager::String8FindString( GetCommandLineA(), "-background" ) )
+		return TTRUE;
+#endif
+
+	return IsDebuggerPresent() || m_bForcedWindowed;
+}
+
+#ifdef BARNYARD_LATEST
+
+void AOptions::GetExtraSettingsPath( TCHAR ( &a_rPath )[ 260 ], TCHAR ( &a_rDir )[ 260 ] )
+{
+#  ifdef BARNYARD_COMMUNITY_PATCH
+	const TCHAR* szDevSavePath = SaveLoadSKU::Dev_GetSavePath();
+
+	if ( szDevSavePath[ 0 ] != '\0' )
+	{
+		// Development: <dev save file>.cfg
+		TStringManager::String8Copy( a_rPath, szDevSavePath, sizeof( a_rPath ) - 5 );
+		strcat( a_rPath, ".cfg" );
+		a_rDir[ 0 ] = '\0';
+		return;
+	}
+#  endif
+
+	// Save\OpenBarnyard.cfg, next to savedata.by (SaveLoadSKU)
+	TStringManager::String8Copy( a_rDir, SaveLoadSKU::GetSaveDirectory(), sizeof( a_rDir ) - 32 );
+	strcpy( a_rPath, a_rDir );
+	strcat( a_rPath, "\\OpenBarnyard.cfg" );
+}
+
+void AOptions::LoadExtraSettings()
+{
+	TCHAR szPath[ 260 ];
+	TCHAR szDir[ 260 ];
+	GetExtraSettingsPath( szPath, szDir );
+
+	FILE* pFile = fopen( szPath, "r" );
+
+	if ( !pFile )
+		return;
+
+	// "Name=Value" lines, unknown names are ignored
+	TCHAR szLine[ 128 ];
+
+	while ( fgets( szLine, sizeof( szLine ), pFile ) )
+	{
+		TCHAR* pEquals = strchr( szLine, '=' );
+
+		if ( szLine[ 0 ] == '#' || !pEquals )
+			continue;
+
+		*pEquals    = '\0';
+		TINT iValue = atoi( pEquals + 1 );
+
+		if ( !strcmp( szLine, "CameraSpeed" ) )
+		{
+			// NOTE: the speed slider is hidden for now (ACameraOptionsState::SHOW_SPEED_SLIDER), so the Wii Style camera
+			// always uses the default speed. The value stays in the file so the slider can come back.
+			if ( iValue >= 0 && iValue <= CAMERA_SPEED_MAX && ACameraOptionsState::SHOW_SPEED_SLIDER )
+				m_uiCameraSpeed = TUINT8( iValue );
+		}
+		else if ( !strcmp( szLine, "WiiStyleCamera" ) )
+			m_bWiiStyleCamera = iValue != 0;
+		else if ( !strcmp( szLine, "FollowJumpsCamera" ) )
+			m_bFollowJumpsCamera = iValue != 0;
+		else if ( !strcmp( szLine, "EasyDifficulty" ) )
+			m_bEasyDifficulty = iValue != 0;
+	}
+
+	fclose( pFile );
+	TINFO( "Loaded %s (camera: Wii Style %d, Follow Jumps %d, speed %d; easy difficulty %d)\n", szPath, m_bWiiStyleCamera, m_bFollowJumpsCamera, m_uiCameraSpeed, m_bEasyDifficulty );
+}
+
+void AOptions::SaveExtraSettings()
+{
+	m_bExtraSettingsChanged = !WriteExtraSettings();
+}
+
+TBOOL AOptions::WriteExtraSettings()
+{
+	TCHAR szPath[ 260 ];
+	TCHAR szDir[ 260 ];
+	GetExtraSettingsPath( szPath, szDir );
+
+	// The save directory doesn't exist before the first save
+	if ( szDir[ 0 ] != '\0' && GetFileAttributesA( szDir ) == INVALID_FILE_ATTRIBUTES )
+		_mkdir( szDir );
+
+	FILE* pFile = fopen( szPath, "w" );
+
+	if ( !pFile )
+	{
+		TWARN( "Couldn't write %s\n", szPath );
+		return TFALSE;
+	}
+
+	fprintf( pFile, "# OpenBarnyard settings that the original game doesn't have (savedata.by stays compatible with it)\n" );
+	fprintf( pFile, "CameraSpeed=%d\n", m_uiCameraSpeed );
+	fprintf( pFile, "WiiStyleCamera=%d\n", m_bWiiStyleCamera ? 1 : 0 );
+	fprintf( pFile, "FollowJumpsCamera=%d\n", m_bFollowJumpsCamera ? 1 : 0 );
+	fprintf( pFile, "EasyDifficulty=%d\n", m_bEasyDifficulty ? 1 : 0 );
+
+	const TBOOL bWritten = ferror( pFile ) == 0;
+	fclose( pFile );
+
+	TINFO( "Saved %s (camera: Wii Style %d, Follow Jumps %d, speed %d; easy difficulty %d)\n", szPath, m_bWiiStyleCamera, m_bFollowJumpsCamera, m_uiCameraSpeed, m_bEasyDifficulty );
+	return bWritten;
+}
+
+#endif // BARNYARD_LATEST
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+
+TFLOAT AOptions::GetRenderDistanceScale()
+{
+	// The Draw Distance of the options (render.draw_distance, AGraphicsSettings), "-renderdistance <25..150>" on the
+	// command line sets it too
+	return AGraphicsSettings::GetDrawDistanceScale();
+}
+
+#endif // BARNYARD_COMMUNITY_PATCH

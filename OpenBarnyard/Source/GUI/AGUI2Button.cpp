@@ -1,0 +1,214 @@
+#include "pch.h"
+#include "AGUI2Button.h"
+
+#include <GUI/T2GUITextureSectionManager.h>
+
+//-----------------------------------------------------------------------------
+// Enables memory debugging.
+// Note: Should be the last include!
+//-----------------------------------------------------------------------------
+#include <Core/TMemoryDebugOn.h>
+
+TOSHI_NAMESPACE_USING
+
+// $Barnyard: FUNCTION 00640020
+AGUI2Button::AGUI2Button()
+{
+	m_bScaleOnFocus      = TTRUE;
+	m_bFocused           = TFALSE;
+	m_fRectangle1Width   = 0.0f;
+	m_fRectangle1Height  = 0.0f;
+	m_bUseRectangle1     = TFALSE;
+	m_pRectangle1Section = TNULL;
+	m_uiFocusedColour    = 0xffffff80;
+	m_uiEnabledColour    = 0xffffffff;
+	m_uiDisabledColour   = 0xffc0c0c0;
+	m_fFocusedScale      = 1.25f;
+	m_fScale             = 1.0f;
+	m_pFont              = TNULL;
+	m_fGap               = 0.0f;
+	m_wszButtonText      = TNULL;
+}
+
+// $Barnyard: FUNCTION 006400f0
+// $Barnyard: FUNCTION 00407f00
+AGUI2Button::~AGUI2Button()
+{
+	m_oBackgroundRect.Unlink();
+}
+
+// $Barnyard: FUNCTION 00640490
+void AGUI2Button::Create( T2GUIFont* a_pFont, TFLOAT a_fWidth, const TWCHAR* a_wszText, TFLOAT a_fGap )
+{
+	TVALIDPTR( a_pFont );
+	TVALIDPTR( a_wszText );
+
+	m_fGap  = a_fGap;
+	m_pFont = a_pFont;
+
+	m_oText.Create( a_pFont, a_fWidth );
+	SetButtonColour( m_uiEnabledColour );
+
+	if ( m_bScaleOnFocus )
+		m_oTransform.SetScale( m_fScale, m_fScale );
+
+	m_oText.SetText( a_wszText );
+	AddChildTail( m_oText );
+
+	m_oText.SetAttachment( T2GUIATTACHMENT_MIDDLECENTER, T2GUIATTACHMENT_MIDDLECENTER );
+	m_oText.SetTextAlign( T2GUIFont::TextAlign_Center );
+}
+
+#ifdef BARNYARD_COMMUNITY_PATCH
+
+// $BarnyardPS2EU: FUNCTION 003f2d40
+void AGUI2Button::SetText( const TWCHAR* a_wszText, TBOOL a_bFitWidth )
+{
+	if ( a_bFitWidth )
+		m_oText.SetTextAndFitWidth( a_wszText );
+	else
+		m_oText.SetText( a_wszText );
+
+	m_wszButtonText = a_wszText;
+}
+
+#endif // BARNYARD_COMMUNITY_PATCH
+
+// $Barnyard: FUNCTION 00640380
+void AGUI2Button::SetImage( const TCHAR* a_szTexSec, TFLOAT a_fScaleX, TFLOAT a_fScaleY )
+{
+	TVALIDPTR( a_szTexSec );
+
+	T2GUITextureSection* pTexSec = T2GUITextureSectionManager::GetTextureSection( a_szTexSec );
+	TVALIDPTR( pTexSec );
+
+	TFLOAT fHeight = m_oText.GetHeight() * a_fScaleY;
+	TFLOAT fWidth  = m_oText.GetWidth() * a_fScaleX;
+	m_oBackgroundRect.SetDimensions( fWidth, fHeight );
+	m_oBackgroundRect.SetTextureSection( pTexSec );
+	m_oBackgroundRect.SetAttachment( T2GUIATTACHMENT_MIDDLECENTER, T2GUIATTACHMENT_MIDDLECENTER );
+	LinkChildBefore( m_oBackgroundRect, m_oText );
+}
+
+// $Barnyard: FUNCTION 00640240
+void AGUI2Button::SetHighlightImage( const TCHAR* a_szTexSec )
+{
+	m_pRectangle1Section = T2GUITextureSectionManager::GetTextureSection( a_szTexSec );
+
+	TFLOAT fHeight = m_pRectangle1Section->GetHeight() + m_fRectangle1Height;
+	TFLOAT fWidth  = m_pRectangle1Section->GetWidth() + m_fRectangle1Width;
+	m_Rectangle1.SetDimensions( fWidth, fHeight );
+	m_Rectangle1.SetTextureSection( m_pRectangle1Section );
+	m_Rectangle1.SetAttachment( T2GUIATTACHMENT_MIDDLECENTER, T2GUIATTACHMENT_MIDDLECENTER );
+}
+
+// $Barnyard: FUNCTION 006403f0
+void AGUI2Button::ResizeImage( TFLOAT a_fScaleX, TFLOAT a_fScaleY )
+{
+	TFLOAT fHeight = m_oText.GetHeight() * a_fScaleY;
+	TFLOAT fWidth  = m_oText.GetWidth() * a_fScaleX;
+	m_oBackgroundRect.SetDimensions( fWidth, fHeight );
+}
+
+// $Barnyard: FUNCTION 00640210
+void AGUI2Button::GetDimensions( TFLOAT& a_rWidth, TFLOAT& a_rHeight )
+{
+	m_oText.GetDimensions( a_rWidth, a_rHeight );
+}
+
+// $Barnyard: FUNCTION 006402c0
+void AGUI2Button::SetAlpha( TFLOAT a_fAlpha )
+{
+	m_oText.SetAlpha( a_fAlpha );
+	m_Rectangle1.SetAlpha( a_fAlpha );
+	m_oBackgroundRect.SetAlpha( a_fAlpha );
+
+	for ( auto it = m_oText.ChildRBegin(); it != TNULL; it = m_oText.GetPrevChild( it ) )
+	{
+		it->SetAlpha( a_fAlpha );
+	}
+
+	AGUI2MenuItem::SetAlpha( a_fAlpha );
+}
+
+// $Barnyard: FUNCTION 00640330
+void AGUI2Button::SetShadowAlpha( TFLOAT a_fAlpha )
+{
+	m_oText.SetShadowAlpha( a_fAlpha );
+
+	for ( auto it = m_oText.ChildRBegin(); it != TNULL; it = m_oText.GetPrevChild( it ) )
+	{
+		it->SetShadowAlpha( a_fAlpha );
+	}
+
+	AGUI2MenuItem::SetShadowAlpha( a_fAlpha );
+}
+
+// $Barnyard: FUNCTION 00640550
+void AGUI2Button::OnFocus()
+{
+	m_bFocused = TTRUE;
+
+	if ( m_bScaleOnFocus )
+		m_oTransform.SetScale( m_fFocusedScale, m_fFocusedScale );
+
+	SetButtonColour( m_uiFocusedColour );
+
+	if ( m_bUseRectangle1 )
+	{
+		TFLOAT fWidth, fHeight;
+		GetDimensions( fWidth, fHeight );
+
+		m_Rectangle1.SetDimensions( fWidth + m_fRectangle1Width, fHeight + m_fRectangle1Height );
+		LinkChildBefore( m_Rectangle1, m_oText );
+	}
+}
+
+// $Barnyard: FUNCTION 00640610
+void AGUI2Button::OnFocusLost()
+{
+	m_bFocused = TFALSE;
+
+	if ( m_bScaleOnFocus )
+		m_oTransform.SetScale( m_fScale, m_fScale );
+
+	SetButtonColour( IsEnabled() ? m_uiEnabledColour : m_uiDisabledColour );
+
+	if ( m_bUseRectangle1 )
+		m_Rectangle1.RemoveSelf();
+}
+
+// $Barnyard: FUNCTION 006406b0
+void AGUI2Button::SetEnabled( TBOOL a_bEnabled )
+{
+	if ( IsEnabled() != a_bEnabled )
+	{
+		AGUI2MenuItem::SetEnabled( a_bEnabled );
+
+		SetButtonColour( IsEnabled() ? m_uiEnabledColour : m_uiDisabledColour );
+	}
+}
+
+// $Barnyard: FUNCTION 006401f0
+TFLOAT AGUI2Button::GetFlowVisualOffset()
+{
+	TVALIDPTR( m_pFont );
+	return m_pFont->GetLinesMargin() * 0.5f + m_fGap;
+}
+
+TFLOAT AGUI2Button::GetFlowOffset()
+{
+	TVALIDPTR( m_pFont );
+	return m_pFont->GetLinesMargin() * 0.5f + m_fGap;
+}
+
+// $Barnyard: FUNCTION 00640440
+void AGUI2Button::SetButtonColour( TUINT a_uiColour )
+{
+	m_oText.SetColour( a_uiColour );
+
+	for ( auto it = m_oText.ChildRBegin(); it != TNULL; it = m_oText.GetPrevChild( it ) )
+	{
+		it->SetColour( a_uiColour );
+	}
+}

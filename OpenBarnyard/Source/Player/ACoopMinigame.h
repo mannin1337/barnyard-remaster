@@ -21,6 +21,10 @@ public:
     static TBOOL SupportsGolfGroundView();
     static TBOOL SupportsDartsViewAim();
     static TBOOL IsScoreDuel(AMiniGameState* a_pState = TNULL);
+    // Owner of a native single-player HUD inside a LAN match. Parallel challenges
+    // show the local runner; the shared board in an alternating match shows its turn owner.
+    static const TWCHAR* GetNativePlayerName();
+    static TBOOL PlayerNamesChanged(TUINT& a_rRevision);
     static TBOOL IsRealtimeMud(AMiniGameState* a_pState = TNULL);
     static TBOOL IsRealtimeMudHost();
     static TUINT GetRealtimeMudLocalPlayer();

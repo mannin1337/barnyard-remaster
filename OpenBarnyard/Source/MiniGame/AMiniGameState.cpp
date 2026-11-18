@@ -163,7 +163,12 @@ void AMiniGameState::OnStart()
 	if ( m_bShowPlayerFloats == TTRUE )
 	{
 		for ( TINT i = 0; i < iNumPlayers; i++ )
+		{
+			if ( ACoopMinigame::IsPlaying() && !ACoopMinigame::IsRealtimeMud() &&
+			     pPlayerManager->GetCurrentPlayerSet()->IsPlayerSlotUsedByHuman(i) )
+				m_aPlayerFloats[i].SetDisplayName(ACoopMinigame::GetNativePlayerName());
 			m_aPlayerFloats[ i ].Show();
+		}
 
 		for ( TINT i = iNumPlayers; i < MAX_PLAYERS; i++ )
 			m_aPlayerFloats[ i ].Hide();
@@ -296,7 +301,8 @@ void AMiniGameState::OnInsertion()
 			AUnit* pUnit = pPlayerSet->GetPlayerUnit( i );
 
 			if ( pPlayerSet->IsPlayerSlotUsedByHuman( i ) )
-				m_aPlayerFloats[ i ].SetPlayer( i, TTRUE, pUnit );
+				m_aPlayerFloats[ i ].SetPlayer( i, TTRUE, pUnit,
+					ACoopMinigame::IsPlaying() ? ACoopMinigame::GetNativePlayerName() : TNULL );
 #ifdef BARNYARD_COMMUNITY_PATCH
 			// Retail leaves the computer floats unbound, but OnStart shows them anyway
 			// (their Tick would dereference a NULL unit), so bind them as "Com"

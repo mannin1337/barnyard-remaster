@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ACoopPartner.h"
+#include "ACoop.h"
 #include "ACoopNet.h"
 #include "ACoopAnim.h"
 #include "APlayerProfileManager.h"
@@ -52,6 +53,10 @@
 #include <GUI/T2GUIFontManager.h>
 
 #include <cmath>
+#if defined( TOSHI_SKU_WINDOWS ) && !defined( TOSHI_SKU_WASM )
+#  include <shellapi.h>
+#  pragma comment( lib, "shell32.lib" )
+#endif
 
 //-----------------------------------------------------------------------------
 // Enables memory debugging.
@@ -202,25 +207,62 @@ static TBOOL AreEmotesAllowed()
 	return s_eLocalActivity == ACoopPartner::ACTIVITY_FREE || s_bEmotesInMicroGame;
 }
 
-static void GetLocalName( TWCHAR* a_wszOut )
+using CoopName = TWCHAR[ ACoopPartner::MAX_NAME ];
+
+static void CopyDisplayName( CoopName& out, const TWCHAR* source )
 {
-	a_wszOut[ 0 ] = L'\0';
+	TINT count = 0;
+	for ( TINT i = 0; source && i < ACoopPartner::MAX_NAME - 1 && source[ i ]; ++i )
+	{
+		TWCHAR c = source[ i ];
+		if ( c <= L' ' || c == 0xa0 || ( c >= 0x7f && c <= 0x9f ) )
+		{
+			if ( count && out[ count - 1 ] != L' ' )
+				out[ count++ ] = L' ';
+			continue;
+		}
+		// Gamepad glyphs, UTF-16 surrogates and invisible direction controls are not name characters.
+		if ( ( c >= 0xf00 && c <= 0xf7f ) || ( c >= 0xd800 && c <= 0xf8ff ) ||
+		     ( c >= 0x200b && c <= 0x200f ) || ( c >= 0x2028 && c <= 0x202e ) || ( c >= 0x2066 && c <= 0x2069 ) || c == 0xfeff )
+			continue;
+		out[ count++ ] = c;
+	}
+	if ( count && out[ count - 1 ] == L' ' )
+		--count;
+	out[ count ] = L'\0';
+}
 
-	if ( !APlayerProfileManager::IsSingletonCreated() )
-		return;
+static const TWCHAR* GetNameOverride( TINT slot )
+{
+	struct Overrides
+	{
+		CoopName names[ 2 ] = {};
+		Overrides()
+		{
+#if defined( TOSHI_SKU_WINDOWS ) && !defined( TOSHI_SKU_WASM )
+			int argc = 0;
+			auto argv = CommandLineToArgvW( GetCommandLineW(), &argc );
+			if ( !argv ) return;
+			for ( int i = 1; i + 1 < argc; ++i )
+			{
+				const int index = wcscmp( argv[ i ], L"-coopname" ) == 0 ? 0 : ( wcscmp( argv[ i ], L"-coopname2" ) == 0 ? 1 : -1 );
+				if ( index >= 0 && argv[ i + 1 ][ 0 ] != L'-' )
+					CopyDisplayName( names[ index ], argv[ ++i ] );
+			}
+			LocalFree( argv );
+#endif
+		}
+	};
+	static const Overrides overrides;
+	return overrides.names[ slot ];
+}
 
-	const TString16& rcName = APlayerProfileManager::GetSingleton()->GetMainProfile()->GetName();
-	const TWCHAR*    wszName = rcName.GetString();
-
-	if ( !wszName )
-		return;
-
-	TINT i = 0;
-
-	for ( ; wszName[ i ] != L'\0' && i < ACoopPartner::MAX_NAME - 1; i++ )
-		a_wszOut[ i ] = wszName[ i ];
-
-	a_wszOut[ i ] = L'\0';
+static void GetLocalName( CoopName& out )
+{
+	const TWCHAR* name = GetNameOverride( 0 );
+	if ( !*name && APlayerProfileManager::IsSingletonCreated() )
+		name = APlayerProfileManager::GetSingleton()->GetMainProfile()->GetName().GetString();
+	CopyDisplayName( out, name );
 }
 
 static void SendInfo( TFLOAT a_fDeltaTime )
@@ -283,14 +325,7 @@ static void OnInfoData( const void* a_pData, TINT a_iSize )
 	if ( s_oPartner.bKnown && oInfo.uiNonce == s_oPartner.oInfo.uiNonce && TINT16( oInfo.uiSequence - s_oPartner.oInfo.uiSequence ) <= 0 )
 		return;
 
-	oInfo.wszName[ ACoopPartner::MAX_NAME - 1 ] = L'\0';
-
-	// Printable characters only
-	for ( TINT i = 0; oInfo.wszName[ i ] != L'\0'; i++ )
-	{
-		if ( oInfo.wszName[ i ] < 0x20 )
-			oInfo.wszName[ i ] = L'?';
-	}
+	CopyDisplayName( oInfo.wszName, oInfo.wszName );
 
 	if ( oInfo.iMiniGame >= 0 && ( !AMiniGameManager::IsSingletonCreated() || oInfo.iMiniGame >= AMiniGameManager::GetSingleton()->GetTotalNumMiniGames() ) )
 		oInfo.iMiniGame = -1;
@@ -312,16 +347,10 @@ static void OnInfoData( const void* a_pData, TINT a_iSize )
 static constexpr TINT STATUS_SIZE = 96;
 
 static TWCHAR s_wszStatus[ STATUS_SIZE ] = L""; // empty: no line
-static TWCHAR s_wszTag[ ACoopPartner::MAX_NAME ] = L"";
 
 // The line that says why "Go to partner" couldn't be done, shown for a few seconds
 static MODSTRING s_eNote     = MODSTRING_PARTNER_GOTO_AWAY;
 static TFLOAT    s_fNoteTime = 0.0f;
-
-// Where the tag goes (GUI units from the top left of the screen), and whether it's shown
-static TVector2 s_vTagPosition;
-static TBOOL    s_bTagShown = TFALSE;
-static TFLOAT   s_fTagAlpha = 0.0f;
 
 static void FormatStatus( MODSTRING a_eText, const TWCHAR* a_wszArgument = L"" )
 {
@@ -433,20 +462,16 @@ static void UpdateStatus( AUnit* a_pRemoteUnit )
 	}
 }
 
-// Where the name tag goes: above the head of the partner's model
-static void UpdateTag( TFLOAT a_fDeltaTime )
+// GUI position above a cow's animated head, including camera-distance fading.
+static TBOOL ProjectTag( AAnimatableObject* pAvatar, TVector2& position, TFLOAT& alpha )
 {
-	s_bTagShown = TFALSE;
-
-	AAnimatableObject* pAvatar = ACoopAnim::GetRemoteAvatar();
-
-	if ( !pAvatar || !ARenderer::IsSingletonCreated() || !ACameraManager::IsSingletonCreated() || !AGUI2::IsSingletonCreated() )
-		return;
+	if ( !pAvatar || !pAvatar->GetModelInstance() || !ARenderer::IsSingletonCreated() || !ACameraManager::IsSingletonCreated() )
+		return TFALSE;
 
 	ACamera* pCamera = ACameraManager::GetSingleton()->GetCurrentCamera();
 
 	if ( !pCamera )
-		return;
+		return TFALSE;
 
 	AModelInstance* pModelInstance = pAvatar->GetModelInstance().Get();
 	TMatrix44       matModel;
@@ -480,12 +505,12 @@ static void UpdateTag( TFLOAT a_fDeltaTime )
 	const TFLOAT fDistance = vToTag.Magnitude();
 
 	if ( fDistance > 40.0f || fDistance < 1.5f )
-		return;
+		return TFALSE;
 
 	TVector2 vGUI;
 
 	if ( !ARenderer::GetSingleton()->ProjectToGUI( pCamera, vHead, vGUI ) )
-		return;
+		return TFALSE;
 
 	TFLOAT fWidth, fHeight;
 	AGUI2::GetRootElement()->GetDimensions( fWidth, fHeight );
@@ -507,19 +532,15 @@ static void UpdateTag( TFLOAT a_fDeltaTime )
 	}
 
 	if ( vGUI.x < 0.0f || vGUI.x > fWidth || vGUI.y < 0.0f || vGUI.y > fHeight )
-		return;
+		return TFALSE;
+	position = vGUI;
+	alpha = ( fDistance < 25.0f ) ? 1.0f : 1.0f - ( fDistance - 25.0f ) / 15.0f;
+	return TTRUE;
+}
 
-	s_vTagPosition = vGUI;
-	s_bTagShown    = TTRUE;
-	s_fTagAlpha    = ( fDistance < 25.0f ) ? 1.0f : 1.0f - ( fDistance - 25.0f ) / 15.0f;
-
-	const TWCHAR* wszName = ACoopPartner::GetPartnerName();
-	TINT          i       = 0;
-
-	for ( ; wszName[ i ] != L'\0' && i < ACoopPartner::MAX_NAME - 1; i++ )
-		s_wszTag[ i ] = wszName[ i ];
-
-	s_wszTag[ i ] = L'\0';
+static AAnimatableObject* GetCowAvatar( AUnit* unit )
+{
+	return unit && unit->IsA( &TGetClass( AAnimatedUnit ) ) ? TSTATICCAST( AAnimatedUnit, unit )->GetAnimatableObject() : TNULL;
 }
 
 // The line at the top and the name tag, with the HUD of the farm and of the barn
@@ -539,7 +560,9 @@ public:
 
 private:
 	AGUI2TextBox m_oStatus;
-	AGUI2TextBox m_oTag;
+	AGUI2TextBox m_aTags[ 2 ];
+	CoopName     m_aTagNames[ 2 ] = {};
+	TFLOAT       m_aTagWidths[ 2 ] = {};
 	T2GUIFont*   m_pFont;
 	TFLOAT       m_fStatusAlpha;
 };
@@ -584,18 +607,23 @@ TBOOL ACoopPartnerHud::OnAttach()
 	AGUI2::GetRootElement()->AddChildTail( m_oStatus );
 	m_oStatus.T2GUIElement::Hide();
 
-	// Placed over the partner's head every frame
-	m_oTag.Create( m_pFont, 0.0f );
-	m_oTag.SetAttachment( T2GUIATTACHMENT_TOPLEFT, T2GUIATTACHMENT_MIDDLECENTER );
-	m_oTag.SetColour( AGUI2STYLE_COLOR_PRIMARY );
-	m_oTag.SetShadowEnabled( TTRUE );
-	m_oTag.SetShadowColour( 0xA0000000 );
-	m_oTag.SetShadowAlpha( 0.6f );
-	m_oTag.SetShadowOffset( 2.5f, 2.5f );
-	m_oTag.SetSize( 0.4f * fScreenWidth, 0.0f, TFALSE );
-	m_oTag.SetScale( 0.8f );
-	AGUI2::GetRootElement()->AddChildTail( m_oTag );
-	m_oTag.T2GUIElement::Hide();
+	for ( TINT role = 0; role < 2; ++role )
+	{
+		auto& tag = m_aTags[ role ];
+		m_aTagNames[ role ][ 0 ] = L'\0';
+		m_aTagWidths[ role ] = 0.0f;
+		tag.Create( m_pFont, 0.0f );
+		tag.SetAttachment( T2GUIATTACHMENT_TOPLEFT, T2GUIATTACHMENT_MIDDLECENTER );
+		tag.SetColour( AGUI2STYLE_COLOR_PRIMARY );
+		tag.SetShadowEnabled( TTRUE );
+		tag.SetShadowColour( 0xA0000000 );
+		tag.SetShadowAlpha( 0.6f );
+		tag.SetShadowOffset( 2.5f, 2.5f );
+		tag.SetSize( 0.4f * fScreenWidth, 0.0f, TFALSE );
+		tag.SetScale( 0.8f );
+		AGUI2::GetRootElement()->AddChildTail( tag );
+		tag.T2GUIElement::Hide();
+	}
 
 	return TTRUE;
 }
@@ -603,7 +631,7 @@ TBOOL ACoopPartnerHud::OnAttach()
 void ACoopPartnerHud::OnDetach()
 {
 	m_oStatus.RemoveSelf();
-	m_oTag.RemoveSelf();
+	for ( auto& tag : m_aTags ) tag.RemoveSelf();
 
 	T2GUIFontManager::ReleaseFont( m_pFont );
 	m_pFont = TNULL;
@@ -617,7 +645,7 @@ void ACoopPartnerHud::Show()
 void ACoopPartnerHud::Hide()
 {
 	m_oStatus.T2GUIElement::Hide();
-	m_oTag.T2GUIElement::Hide();
+	for ( auto& tag : m_aTags ) tag.T2GUIElement::Hide();
 	m_fStatusAlpha      = 0.0f;
 	m_bCurrentlyVisible = TFALSE;
 }
@@ -645,21 +673,49 @@ void ACoopPartnerHud::Update( TFLOAT a_fDeltaTime )
 		m_oStatus.T2GUIElement::Hide();
 	}
 
-	if ( bSession && s_bTagShown && s_wszTag[ 0 ] != L'\0' )
+	AAnimatableObject* avatars[ 2 ] = {};
+	AUnit* second = bSession ? ACoopNet::GetRemotePlayerUnit() : ACoop::GetSecondPlayerUnit();
+	if ( second )
 	{
-		m_oTag.SetText( s_wszTag );
-		m_oTag.SetTransform( s_vTagPosition.x, s_vTagPosition.y );
-		m_oTag.SetAlpha( s_fTagAlpha );
-		m_oTag.SetShadowAlpha( s_fTagAlpha * 0.6f );
-		m_oTag.T2GUIElement::Show();
+		const TINT local = ACoopNet::GetMode() == ACoopNet::MODE_JOIN ? 1 : 0;
+		if ( AUnit* first = ACoopNet::GetLocalPlayer() )
+		{
+			avatars[ local ] = GetCowAvatar( first );
+			avatars[ 1 - local ] = bSession ? ACoopAnim::GetRemoteAvatar() : GetCowAvatar( second );
+		}
 	}
-	else
+	TVector2 positions[ 2 ];
+	TFLOAT alphas[ 2 ];
+	TFLOAT firstWidth = 0.0f;
+	for ( TINT role = 0; role < 2; ++role )
 	{
-		m_oTag.T2GUIElement::Hide();
+		auto& tag = m_aTags[ role ];
+		if ( !ProjectTag( avatars[ role ], positions[ role ], alphas[ role ] ) )
+		{
+			tag.T2GUIElement::Hide();
+			continue;
+		}
+		const TWCHAR* name = ACoopPartner::GetPlayerName( role );
+		if ( TStringManager::String16Compare( m_aTagNames[ role ], name ) != 0 )
+		{
+			CopyDisplayName( m_aTagNames[ role ], name );
+			m_aTagWidths[ role ] = m_pFont->GetTextWidth( m_aTagNames[ role ], 0.8f );
+			tag.SetText( m_aTagNames[ role ] );
+		}
+		const TFLOAT width = m_aTagWidths[ role ];
+		const TFLOAT line = m_pFont->GetLineHeight() * 0.9f;
+		if ( role == 0 ) firstWidth = width;
+		else if ( firstWidth > 0.0f && TMath::Abs( positions[ 1 ].x - positions[ 0 ].x ) < ( firstWidth + width ) * 0.5f &&
+		          TMath::Abs( positions[ 1 ].y - positions[ 0 ].y ) < line )
+			positions[ 1 ].y = positions[ 0 ].y + line;
+		tag.SetTransform( positions[ role ].x, positions[ role ].y );
+		tag.SetAlpha( alphas[ role ] );
+		tag.SetShadowAlpha( alphas[ role ] * 0.6f );
+		tag.T2GUIElement::Show();
 	}
 }
 
-static void EnsureHud()
+void ACoopPartner::EnsureWorldHud()
 {
 	if ( s_pHud || !AHudManager::IsSingletonCreated() || !AGUI2::IsSingletonCreated() )
 		return;
@@ -2484,7 +2540,7 @@ static struct ACoopPartnerRegistration
 
 void ACoopPartner::Update( TFLOAT a_fDeltaTime, AUnit* a_pLocalPlayer, AUnit* a_pRemoteUnit )
 {
-	EnsureHud();
+	EnsureWorldHud();
 
 	s_eLocalActivity     = FindLocalActivity();
 	s_bEmotesInMicroGame = FindEmotesInMicroGame();
@@ -2519,14 +2575,12 @@ void ACoopPartner::Update( TFLOAT a_fDeltaTime, AUnit* a_pLocalPlayer, AUnit* a_
 	}
 
 	UpdateStatus( a_pRemoteUnit );
-	UpdateTag( a_fDeltaTime );
 	UpdateIcon( a_pRemoteUnit );
 }
 
 void ACoopPartner::OnRemoteUnitGone()
 {
 	RemoveIcon();
-	s_bTagShown = TFALSE;
 }
 
 void ACoopPartner::OnSessionEnded()
@@ -2566,6 +2620,27 @@ const TWCHAR* ACoopPartner::GetPartnerName()
 
 	// A text of the mod: "Partner" in the language of the game
 	return AModStrings::Get( MODSTRING_PARTNER_NAME );
+}
+
+const TWCHAR* ACoopPartner::GetPlayerName( TINT role )
+{
+	if ( role < 0 || role > 1 ) return L"";
+	static CoopName names[ 2 ] = {};
+	const ACoopNet::MODE mode = ACoopNet::GetMode();
+	const TINT local = mode == ACoopNet::MODE_JOIN ? 1 : 0;
+	if ( role == local )
+		GetLocalName( names[ role ] );
+	else if ( mode == ACoopNet::MODE_OFF )
+		CopyDisplayName( names[ role ], GetNameOverride( 1 ) );
+	else
+		CopyDisplayName( names[ role ], ACoopNet::IsConnected() && s_oPartner.bKnown ? s_oPartner.oInfo.wszName : TNULL );
+	if ( !names[ role ][ 0 ] )
+	{
+		const TWCHAR* fallback = mode == ACoopNet::MODE_OFF ? ( role == 0 ? L"P1" : L"P2" ) :
+		    AModStrings::Get( role == 0 ? MODSTRING_COOPMINI_HOST_PLAYER : MODSTRING_COOPMINI_GUEST_PLAYER );
+		CopyDisplayName( names[ role ], fallback );
+	}
+	return names[ role ];
 }
 
 ACoopPartner::ACTIVITY ACoopPartner::GetLocalActivity()

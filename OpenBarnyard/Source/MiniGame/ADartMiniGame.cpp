@@ -23,7 +23,7 @@
 #include "Input/AInputMapManager.h"
 #include "Locale/ALocale.h"
 #include "Locale/ALocaleManager.h"
-#include "Locale/AModStrings.h"
+#include "Player/ACoopPartner.h"
 #include "Player/APlayerManager.h"
 #include "Player/APlayerProfileManager.h"
 #include "Render/ARenderer.h"
@@ -350,6 +350,9 @@ void ADartMiniGame::RestoreCoopView()
 TBOOL ADartMiniGame::OnUpdate( TFLOAT dt )
 {
 	const TBOOL realtime = ACoopMinigame::IsRealtimeDarts(this);
+	static TUINT nameRevision = 0;
+	if ( realtime && ACoopMinigame::PlayerNamesChanged(nameRevision) )
+		for ( TINT i = 0; i < 2; ++i ) m_aPortraits[i].SetName(ACoopPartner::GetPlayerName(i));
 	if ( realtime && !ACoopMinigame::IsRealtimeDartsHost() && !ACoopMinigame::IsSpectating(this) )
 	{
 		// CanUpdate acknowledges loading, but must never advance a guest native board.
@@ -935,8 +938,8 @@ void ADartMiniGame::OnInsertion()
 	if ( ACoopMinigame::IsRealtimeDarts(this) )
 	{
 		m_bSubmitHighScore = TFALSE;
-		m_aPortraits[0].SetName(AModStrings::Get(MODSTRING_COOPMINI_HOST_PLAYER));
-		m_aPortraits[1].SetName(AModStrings::Get(MODSTRING_COOPMINI_GUEST_PLAYER));
+		m_aPortraits[0].SetName(ACoopPartner::GetPlayerName(0));
+		m_aPortraits[1].SetName(ACoopPartner::GetPlayerName(1));
 		TINFO("[darts-pvp] init role=%s localSlot=%u humans=2 ai=%d rounds=%d dartsEach=%d\n",ACoopMinigame::IsRealtimeDartsHost() ? "host" : "guest",ACoopMinigame::GetRealtimeDartsLocalPlayer(),m_aPlayers[1].bComputer,NUM_ROUNDS,NUM_DARTS);
 	}
 

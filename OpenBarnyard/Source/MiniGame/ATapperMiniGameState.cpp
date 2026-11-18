@@ -1002,7 +1002,8 @@ void ATapperMiniGameState::CreateHUD()
 	pRoot->AddChildTail( m_oPortrait );
 	m_oPortrait.SetAttachment( T2GUIATTACHMENT_TOPLEFT, T2GUIATTACHMENT_TOPLEFT );
 	// NOTE: inlined 00647300 (SetPortraitNameFromProfile)
-	m_oPortrait.SetName( APlayerProfileManager::GetSingleton()->GetMainProfile()->GetName().GetString( 0 ) );
+	m_oPortrait.SetName( ACoopMinigame::IsScoreDuel() ? ACoopMinigame::GetNativePlayerName() :
+		APlayerProfileManager::GetSingleton()->GetMainProfile()->GetName().GetString( 0 ) );
 	m_oPortrait.Hide();
 
 	m_oLivesHud.Create( pRoot, T2GUIATTACHMENT_TOPRIGHT, T2GUIATTACHMENT_TOPRIGHT, m_aiParams[ INTPARAM_MAX_LIVES ], "Tap_Glass", 1.0f, 10.0f, TFALSE );

@@ -27,7 +27,8 @@ public:
 	virtual void SetAlpha( TFLOAT a_fAlpha ) override;
 
 	// Binds the float to a player slot and its unit and attaches it to the GUI root.
-	TBOOL SetPlayer( TINT a_iSlot, TBOOL a_bHuman, AUnit* a_pUnit );
+	TBOOL SetPlayer( TINT a_iSlot, TBOOL a_bHuman, AUnit* a_pUnit, const TWCHAR* a_wszDisplayName = TNULL );
+	void SetDisplayName( const TWCHAR* a_wszDisplayName );
 
 	// TRUE makes the float shrink away (set by AMiniGameState::OnUpdate once the start HUD hides).
 	void  SetEnabled( TBOOL a_bEnabled ) { m_bEnabled = a_bEnabled; }

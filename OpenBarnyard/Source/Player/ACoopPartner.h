@@ -67,6 +67,11 @@ public:
 	// The name of the other game's cow ("Partner" while it isn't known)
 	static const TWCHAR* GetPartnerName();
 
+	// Host / couch player one is 0; guest / couch player two is 1, on either machine.
+	// Each role has its own stable display buffer.
+	static const TWCHAR* GetPlayerName( TINT a_iRole );
+	static void EnsureWorldHud();
+
 	// What this game's player does now
 	static ACTIVITY GetLocalActivity();
 

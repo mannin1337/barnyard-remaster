@@ -106,10 +106,6 @@ void ABarnYardPoolMiniGameState::ResetCoopState()
 	m_bSubmitHighScore = TFALSE;
 	m_fAimX = m_fAimY = 0;
 	m_abAimInput[0] = m_abAimInput[1] = TFALSE;
-	m_wszOpponentName = AModStrings::Get(MODSTRING_COOPMINI_GUEST_PLAYER);
-	auto* profile = APlayerProfileManager::GetSingleton()->GetMainProfile();
-	m_oHud.SetTeamPlayer(profile->GetHideTextureName(-1,APlayerProfile::GENDER_NONE),AModStrings::Get(MODSTRING_COOPMINI_HOST_PLAYER),0);
-	m_oHud.SetTeamPlayer("Duke",m_wszOpponentName,1);
 	if ( !ACoopMinigame::IsRealtimePoolHost() )
 	{
 		m_pCue->SetAIEnabled(TFALSE);
@@ -349,6 +345,9 @@ TBOOL ABarnYardPoolMiniGameState::OnUpdate( TFLOAT dt )
 	if ( !ACoopMinigame::IsRealtimePool(this) ) return AMiniGameState::OnUpdate(dt);
 	if ( !ms_pCoop ) return AGameState::OnUpdate(dt);
 	CoopState& coop = *ms_pCoop;
+	static TUINT nameRevision = 0;
+	if ( ACoopMinigame::PlayerNamesChanged(nameRevision) )
+		for ( TINT i = 0; i < 2; ++i ) m_oHud.m_aTeams[i].SetDisplayName(ACoopPartner::GetPlayerName(i));
 	if ( coop.mouseUntil > 0 )
 	{
 		coop.mouseUntil -= dt;
@@ -362,6 +361,7 @@ TBOOL ABarnYardPoolMiniGameState::OnUpdate( TFLOAT dt )
 		if ( ACoopMinigame::ReadSpectatorFrame(this,&frame,sizeof(frame),&sequence,&match) && ValidPoolView(frame) )
 		{
 			const TBOOL titleChanged = !coop.received || std::memcmp(frame.title,coop.view.title,sizeof(frame.title)) != 0;
+			const TBOOL turnChanged = coop.received && frame.owner != coop.view.owner;
 			const TBOOL infoChanged = !coop.received || std::memcmp(frame.info,coop.view.info,sizeof(frame.info)) != 0;
 			const TBOOL fresh = coop.motion.Fresh(sequence,match);
 			const TBOOL localInput = frame.owner == ACoopMinigame::GetRealtimePoolLocalPlayer() && frame.stage;
@@ -411,6 +411,7 @@ TBOOL ABarnYardPoolMiniGameState::OnUpdate( TFLOAT dt )
 			camera->SetFOV(shown.fov);
 			m_oHud.SetTeamsVisible(TTRUE);
 			m_oHud.SetFirstTeamActive(frame.owner == 0);
+			if ( turnChanged ) ShowCoopTurn(frame.owner);
 			for ( TINT i = 0; i < 2; ++i )
 			{
 				if ( frame.groups[i] != BALLTYPE_NONE ) m_oHud.SetBallColour(i,frame.groups[i]);

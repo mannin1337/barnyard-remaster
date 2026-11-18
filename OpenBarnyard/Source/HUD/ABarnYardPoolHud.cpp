@@ -178,36 +178,19 @@ void ABarnYardPoolHud::TeamHud::SetPlayer( const TCHAR* a_szTexture, const TWCHA
 	m_oPortrait.SetDimensions( pSection->GetWidth(), pSection->GetHeight() );
 	m_oPortrait.SetTextureSection( pSection );
 
-#ifdef BARNYARD_COMMUNITY_PATCH
-	// Don't use the name as the format string
-	TStringManager::String16Format( m_wszName, NAME_SIZE, L"%s", a_wszName );
-#else
-	TStringManager::String16Format( m_wszName, NAME_SIZE, a_wszName );
-#endif
-
-	// NOTE: the original computes half the portrait width + 1 here and doesn't use it
-	TFLOAT fPortraitWidth  = 0.0f;
-	TFLOAT fPortraitHeight = 0.0f;
-	m_oPortrait.GetDimensions( fPortraitWidth, fPortraitHeight );
-
 	T2GUIFont* pFont = T2GUIFontManager::FindFont( "Rekord26" );
 	m_oName.GetTransform().SetIdentity();
-	m_oName.Create( pFont, pFont->GetTextWidth( m_wszName, 1.0f ) );
+	m_oName.Create( pFont, 0.0f );
+	m_oName.SetTransform( 0.0f, -3.0f, 0.0f );
+	if ( !a_bLeft ) m_oPortrait.FlipU();
+	SetDisplayName( a_wszName );
+}
+
+void ABarnYardPoolHud::TeamHud::SetDisplayName( const TWCHAR* a_wszName )
+{
+	TStringManager::String16CopySafe( m_wszName, a_wszName, NAME_SIZE );
 	m_oName.SetTextAndFitWidth( m_wszName );
-
-	if ( a_bLeft == TTRUE )
-	{
-		m_oName.SetTransform( 0.0f, -3.0f, 0.0f );
-	}
-	else
-	{
-		m_oName.SetTransform( 0.0f, -3.0f, 0.0f );
-		m_oPortrait.FlipU();
-	}
-
-	TFLOAT fHeight    = m_oPortrait.GetHeight();
-	TFLOAT fHalfWidth = m_oPortrait.GetWidth() * 0.5f;
-	SetDimensions( m_oName.GetWidth() + fHalfWidth, fHeight );
+	SetDimensions( m_oName.GetWidth() + m_oPortrait.GetWidth() * 0.5f, m_oPortrait.GetHeight() );
 }
 
 // $Barnyard: FUNCTION 004d1190

@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ABarnYardPoolMiniGameState.h"
 #include "Player/ACoopMinigame.h"
+#include "Player/ACoopPartner.h"
 #include "Helpers/APlayerProgress.h"
 #include "Animation/AAnimatableObject.h"
 #include "Animation/AModel.h"
@@ -215,10 +216,8 @@ void ABarnYardPoolMiniGameState::ResetGame()
 
 	m_oPowerBar.SetValue( 0.0f, TFALSE );
 
-	if ( m_iCurrentTeam == 0 )
-		ALocale::FormatTags( m_wszText, TEXT_SIZE - 2, LOCALE_PLAYER_TURN, PPropertyValue( const_cast<TWCHAR*>( APlayerProfileManager::GetSingleton()->GetMainProfile()->GetName().GetString( 0 ) ), TFALSE ) );
-	else
-		ALocale::FormatTags( m_wszText, TEXT_SIZE - 2, LOCALE_OPPONENT_TURN, PPropertyValue( const_cast<TWCHAR*>( m_wszOpponentName ), TFALSE ) );
+	ALocale::FormatTags( m_wszText, TEXT_SIZE - 2, m_iCurrentTeam == 0 || ACoopMinigame::IsRealtimePool() ? LOCALE_PLAYER_TURN : LOCALE_OPPONENT_TURN,
+		PPropertyValue( const_cast<TWCHAR*>( GetTeamDisplayName(m_iCurrentTeam) ), TFALSE ) );
 
 	m_oHud.SetMessage( m_wszText );
 
@@ -339,6 +338,19 @@ void ABarnYardPoolMiniGameState::RackBalls( TVector4 a_vBlack, TVector4 a_vCueBa
 	GetBallUnit( 6 )->SetSteerPosition( TVector4( fRadius4 + a_vBlack.x, a_vBlack.y, fRow5, a_vBlack.w ) );
 }
 
+const TWCHAR* ABarnYardPoolMiniGameState::GetTeamDisplayName( TINT a_iTeam ) const
+{
+	if ( ACoopMinigame::IsRealtimePool() ) return ACoopPartner::GetPlayerName( a_iTeam );
+	return a_iTeam == 0 ? APlayerProfileManager::GetSingleton()->GetMainProfile()->GetName().GetString( 0 ) : m_wszOpponentName;
+}
+
+void ABarnYardPoolMiniGameState::ShowCoopTurn( TINT a_iTeam )
+{
+	ALocale::FormatTags( m_oHud.m_wszTurnText, TARRAYSIZE(m_oHud.m_wszTurnText), LOCALE_PLAYER_TURN,
+		PPropertyValue( const_cast<TWCHAR*>( GetTeamDisplayName(a_iTeam) ), TFALSE ) );
+	m_oHud.ShowTurn( TFALSE );
+}
+
 // $Barnyard: FUNCTION 004d1e90
 void ABarnYardPoolMiniGameState::NextTurn()
 {
@@ -355,7 +367,8 @@ void ABarnYardPoolMiniGameState::NextTurn()
 	{
 		m_iNextTeam  = m_iOtherTeam;
 		m_iOtherTeam = iTeam;
-		m_oHud.ShowTurn( m_iNextTeam );
+		if ( ACoopMinigame::IsRealtimePool() ) ShowCoopTurn( m_iCurrentTeam );
+		else m_oHud.ShowTurn( m_iNextTeam );
 	}
 
 	m_oHud.SetTitleText( ALocaleManager::Interface()->GetString( LOCALE_TURN_OVER ) );
@@ -693,10 +706,8 @@ void ABarnYardPoolMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 			m_pCue->SetVisible( TFALSE );
 			m_oPowerBar.SetBarVisible( TFALSE );
 
-			if ( m_iWinner != 0 )
-				ALocale::FormatTags( m_wszText, TEXT_SIZE - 2, LOCALE_OPPONENT_WINS, PPropertyValue( const_cast<TWCHAR*>( m_wszOpponentName ), TFALSE ) );
-			else
-				ALocale::FormatTags( m_wszText, TEXT_SIZE - 2, LOCALE_PLAYER_WINS, PPropertyValue( const_cast<TWCHAR*>( APlayerProfileManager::GetSingleton()->GetMainProfile()->GetName().GetString( 0 ) ), TFALSE ) );
+			ALocale::FormatTags( m_wszText, TEXT_SIZE - 2, m_iWinner == 0 || ACoopMinigame::IsRealtimePool() ? LOCALE_PLAYER_WINS : LOCALE_OPPONENT_WINS,
+				PPropertyValue( const_cast<TWCHAR*>( GetTeamDisplayName(m_iWinner) ), TFALSE ) );
 
 			m_oHud.SetTitleText( m_wszText );
 			m_eState = STATE_GAME_OVER_WAIT;
@@ -873,7 +884,8 @@ void ABarnYardPoolMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 			}
 			else
 			{
-				ALocale::FormatTags( m_wszText, TEXT_SIZE - 2, LOCALE_PLAYER_TURN, PPropertyValue( const_cast<TWCHAR*>( APlayerProfileManager::GetSingleton()->GetMainProfile()->GetName().GetString( 0 ) ), TFALSE ) );
+				ALocale::FormatTags( m_wszText, TEXT_SIZE - 2, LOCALE_PLAYER_TURN,
+					PPropertyValue( const_cast<TWCHAR*>( GetTeamDisplayName(ACoopMinigame::IsRealtimePool() ? m_iCurrentTeam : 0) ), TFALSE ) );
 				m_oHud.SetMessage( m_wszText );
 			}
 

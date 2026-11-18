@@ -3,6 +3,7 @@
 #include "ACoopMinigameProtocol.h"
 #include "ACoopMinigameTiming.h"
 #include "ACoopNet.h"
+#include "ACoopPartner.h"
 #include "ACoopProgress.h"
 #include "APlayerManager.h"
 #include "Helpers/AGameLoader.h"
@@ -12,6 +13,7 @@
 #include "GameInterface/AMessagePopupState.h"
 #include "MiniGame/AMiniGameManager.h"
 #include "MiniGame/AMiniGameState.h"
+#include "MiniGame/ACoopMinigameHudText.h"
 #include "MiniGame/ABarnExploreMinigameState.h"
 #include "Input/AInputHandler.h"
 #include "Locale/AModStrings.h"
@@ -140,8 +142,22 @@ const TWCHAR* GameTitle(U32 game)
     const TINT index = manager->FindMiniGame(TPString8(s_names[game]));
     return index >= 0 ? ALocaleManager::Interface()->GetString(manager->GetMiniGame(index)->GetLocaleTitle()) : L"";
 }
-TWCHAR s_hudText[256], s_popupText[512];
+TWCHAR s_hudText[512], s_popupText[512];
 U32 s_hudTextVersion = 0;
+U32 s_playerNameVersion = 0;
+
+template <size_t N>
+void NameScorecard(TWCHAR (&text)[N], const TWCHAR* active = nullptr)
+{
+    TWCHAR hostLabel[32], guestLabel[32];
+    const auto* playerFormat = AModStrings::Get(MODSTRING_MINIGAME_PLAYER);
+    AModStrings::Format(hostLabel, TARRAYSIZE(hostLabel), playerFormat, 1);
+    AModStrings::Format(guestLabel, TARRAYSIZE(guestLabel), playerFormat, 2);
+    auto result = CoopMiniHud::Scorecard(text, {hostLabel, guestLabel},
+        {ACoopPartner::GetPlayerName(0), ACoopPartner::GetPlayerName(1)}, GameTitle(s_state.game));
+    if (active) result.append(L" (").append(active).append(L")");
+    TStringManager::String16CopySafe(text, result.c_str(), N);
+}
 void FormatRaceTime(TWCHAR* text, TUINT capacity, TINT milliseconds, TBOOL finished = TTRUE)
 {
     if (!finished)
@@ -397,11 +413,13 @@ public:
         m_text.Create(m_font, 0.0f);
         m_textVersion = ~0u;
         m_text.SetAttachment(T2GUIATTACHMENT_TOPCENTER, T2GUIATTACHMENT_TOPCENTER);
+        m_text.SetTextAlign(T2GUIFont::TextAlign_Center);
+        m_text.SetScale(0.8f);
         m_text.SetColour(0xffffdf80);
         m_text.SetShadowEnabled(TTRUE);
         m_text.SetShadowColour(0xd0000000);
         m_text.SetShadowOffset(3.0f, 3.0f);
-        m_text.SetSize(AGUI2::GetRootElement()->GetWidth() * 0.8f, 0.0f, TFALSE);
+        m_text.SetSize(AGUI2::GetRootElement()->GetWidth() * 0.9f, 0.0f, TFALSE);
         m_text.SetTransform(0.0f, 95.0f);
         AGUI2::GetRootElement()->AddChildTail(m_text);
         m_text.Hide();
@@ -649,6 +667,8 @@ void RefreshHudText(DWORD now)
     // SetText invalidates line layout. Only reformat when something shown has
     // changed, including a language switch or the other player's view going stale.
     static std::array<U32, 6> previous{};
+    static std::wstring previousNames[2];
+    static DWORD lastNameCheck = 0;
     if (s_state.phase == Idle || s_state.phase == Results)
     {
         previous = {};
@@ -668,33 +688,47 @@ void RefreshHudText(DWORD now)
 #endif
     const std::array<U32, 6> current = { s_state.match, s_state.revision, s_state.phase,
         local, language, U32(blocked != 0) | (U32(watching != 0) << 1) };
-    if (previous == current) return;
+    if (previous == current && now - lastNameCheck < 500) return;
+    lastNameCheck = now;
+    const auto* host = ACoopPartner::GetPlayerName(0);
+    const auto* guest = ACoopPartner::GetPlayerName(1);
+    const bool changedNames = previousNames[0] != host || previousNames[1] != guest;
+    if (previous == current && !changedNames) return;
+    if (changedNames) ++s_playerNameVersion;
     previous = current;
+    previousNames[0] = host;
+    previousNames[1] = guest;
     ++s_hudTextVersion;
     s_hudText[0] = 0;
     if (s_state.phase == Offer) AModStrings::Format(s_hudText, TARRAYSIZE(s_hudText), AModStrings::Get(MODSTRING_COOPMINI_WAIT_REPLY), GameTitle(s_state.game));
     if (s_state.phase == Loading) AModStrings::Format(s_hudText, TARRAYSIZE(s_hudText), AModStrings::Get(MODSTRING_COOPMINI_WAIT_PLAYERS), GameTitle(s_state.game));
     if (s_state.phase == Playing && s_state.game == Mud) AModStrings::Format(s_hudText, TARRAYSIZE(s_hudText),
-        AModStrings::Get(MODSTRING_COOPMINI_MUD_PLAYING), GameTitle(s_state.game), s_state.scores[0], s_state.scores[1], LocalPlayer() + 1);
+        AModStrings::Get(MODSTRING_COOPMINI_MUD_PLAYING), CoopMiniHud::Title, s_state.scores[0], s_state.scores[1], local + 1);
     else if (s_state.phase == Playing && LowerScoreWins(s_state.game))
     {
         TWCHAR hostTime[64], guestTime[64];
         FormatRaceTime(hostTime, TARRAYSIZE(hostTime), s_state.scores[0], (s_state.finished & 1) != 0);
         FormatRaceTime(guestTime, TARRAYSIZE(guestTime), s_state.scores[1], (s_state.finished & 2) != 0);
         AModStrings::Format(s_hudText, TARRAYSIZE(s_hudText), AModStrings::Get(MODSTRING_COOPMINI_TIME_PLAYING),
-            GameTitle(s_state.game), hostTime, guestTime,
+            CoopMiniHud::Title, hostTime, guestTime,
             AModStrings::Get(blocked ? MODSTRING_COOPMINI_DUEL_WAITING : MODSTRING_COOPMINI_DUEL_RUNNING));
     }
     else if (s_state.phase == Playing && DuelGame(s_state.game)) AModStrings::Format(s_hudText, TARRAYSIZE(s_hudText),
-        AModStrings::Get(MODSTRING_COOPMINI_DUEL_PLAYING), GameTitle(s_state.game), s_state.scores[0], s_state.scores[1],
+        AModStrings::Get(MODSTRING_COOPMINI_DUEL_PLAYING), CoopMiniHud::Title, s_state.scores[0], s_state.scores[1],
         AModStrings::Get(blocked ? MODSTRING_COOPMINI_DUEL_WAITING : MODSTRING_COOPMINI_DUEL_RUNNING));
     else if (s_state.phase == Playing) AModStrings::Format(s_hudText, TARRAYSIZE(s_hudText),
         AModStrings::Get(s_state.game == Darts ? MODSTRING_COOPMINI_DARTS_PLAYING :
             s_state.game == Pool ? MODSTRING_COOPMINI_POOL_PLAYING : MODSTRING_COOPMINI_PLAYING),
-        GameTitle(s_state.game), s_state.scores[0], s_state.scores[1], s_state.turn + 1,
+        CoopMiniHud::Title, s_state.scores[0], s_state.scores[1], s_state.turn + 1,
         AModStrings::Get(s_state.player == LocalPlayer() ? MODSTRING_COOPMINI_YOUR_TURN :
             (watching ? MODSTRING_COOPMINI_WATCHING : MODSTRING_COOPMINI_PARTNER_TURN)));
     if (s_state.phase == Leaving) TStringManager::String16CopySafe(s_hudText, AModStrings::Get(MODSTRING_COOPMINI_LEAVING), TARRAYSIZE(s_hudText));
+    if (s_state.phase == Playing)
+    {
+        const auto* active = s_state.game == Mud || DuelGame(s_state.game) ? nullptr :
+            (s_state.player == 0 ? host : guest);
+        NameScorecard(s_hudText, active);
+    }
 }
 
 void Update(TFLOAT dt)
@@ -738,11 +772,13 @@ void Update(TFLOAT dt)
     }
     if (s_state.phase == Offer && s_state.inviter != LocalPlayer() && !(s_state.accepted & (1u << LocalPlayer())) && SafeFarm() && !s_popup)
     {
-        AModStrings::Format(s_popupText, TARRAYSIZE(s_popupText),
+        TWCHAR invitation[TARRAYSIZE(s_popupText)];
+        AModStrings::Format(invitation, TARRAYSIZE(invitation),
             AModStrings::Get(s_state.game == Mud ? MODSTRING_COOPMINI_MUD_INVITE :
                 s_state.game == Darts ? MODSTRING_COOPMINI_DARTS_INVITE :
                 s_state.game == Pool ? MODSTRING_COOPMINI_POOL_INVITE :
                 DuelGame(s_state.game) ? MODSTRING_COOPMINI_DUEL_INVITE : MODSTRING_COOPMINI_INVITE), GameTitle(s_state.game));
+        AModStrings::Format(s_popupText, TARRAYSIZE(s_popupText), L"%s\n%s", ACoopPartner::GetPlayerName(s_state.inviter), invitation);
         AGameStateController::GetSingleton()->PushState(new MiniPopup(TFALSE));
     }
 #ifdef BARNYARD_COMMUNITY_PATCH
@@ -782,10 +818,11 @@ void Update(TFLOAT dt)
             FormatRaceTime(hostTime, TARRAYSIZE(hostTime), s_state.scores[0]);
             FormatRaceTime(guestTime, TARRAYSIZE(guestTime), s_state.scores[1]);
             AModStrings::Format(s_popupText, TARRAYSIZE(s_popupText), AModStrings::Get(MODSTRING_COOPMINI_TIME_RESULTS),
-                GameTitle(s_state.game), hostTime, guestTime, AModStrings::Get(outcome));
+                CoopMiniHud::Title, hostTime, guestTime, AModStrings::Get(outcome));
         }
         else AModStrings::Format(s_popupText, TARRAYSIZE(s_popupText), AModStrings::Get(MODSTRING_COOPMINI_RESULTS),
-            GameTitle(s_state.game), s_state.scores[0], s_state.scores[1], AModStrings::Get(outcome));
+            CoopMiniHud::Title, s_state.scores[0], s_state.scores[1], AModStrings::Get(outcome));
+        NameScorecard(s_popupText);
         AGameStateController::GetSingleton()->PushState(new MiniPopup(TTRUE));
         TINFO("[coopmini] same results shown P1=%d P2=%d\n", s_state.scores[0], s_state.scores[1]);
         QueueShot("results");
@@ -946,6 +983,16 @@ TBOOL ACoopMinigame::IsSpectating(AMiniGameState* state)
 TBOOL ACoopMinigame::IsScoreDuel(AMiniGameState* state)
 {
     return IsPlaying() && DuelGame(s_state.game) && (!state || s_game == state);
+}
+const TWCHAR* ACoopMinigame::GetNativePlayerName()
+{
+    return ACoopPartner::GetPlayerName(DuelGame(s_state.game) ? LocalPlayer() : s_state.player);
+}
+TBOOL ACoopMinigame::PlayerNamesChanged(TUINT& revision)
+{
+    if (revision == s_playerNameVersion) return TFALSE;
+    revision = s_playerNameVersion;
+    return TTRUE;
 }
 TBOOL ACoopMinigame::SupportsGolfGroundView() { return (s_peerFeatures & CoopMini::GolfGroundView) != 0; }
 TBOOL ACoopMinigame::SupportsDartsViewAim() { return (s_peerFeatures & CoopMini::DartsViewAim) != 0; }

@@ -59,6 +59,7 @@ public:
 
 		// Sets the portrait (a_szTexture texture section) and the name
 		void SetPlayer( const TCHAR* a_szTexture, const TWCHAR* a_wszName, TBOOL a_bLeft );
+		void SetDisplayName( const TWCHAR* a_wszName );
 
 		// Gives the balls the colour a_eColour (BALLCOLOUR) and shows them, if not shown yet
 		void SetBallColour( TINT a_eColour );

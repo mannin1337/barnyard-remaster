@@ -13,7 +13,7 @@ py -3 -m pip install -r Tools/hd/requirements.txt
 py -3 Tools/hd/build_hd.py --game "C:\Games\Barnyard" --output "C:\Games\BarnyardRemaster"
 ```
 
-**Linux or SteamOS**
+**Linux terminal, including SteamOS Desktop Mode**
 
 ```sh
 python3 -m venv .venv-hd
@@ -34,7 +34,7 @@ The v5.5 release used the `realesrgan-x4plus` model with Real-ESRGAN NCNN Vulkan
 py -3 Tools/hd/build_hd.py --game "C:\Games\Barnyard" --output "C:\Games\BarnyardRemaster" --upscaler "C:\Tools\RealESRGAN\realesrgan-ncnn-vulkan.exe"
 ```
 
-**Linux or SteamOS**, with the Python environment above active
+**Linux**, with the Python environment above active
 
 ```sh
 python Tools/hd/build_hd.py --game "$HOME/Games/Barnyard" --output "$HOME/Games/BarnyardRemaster" --upscaler "$HOME/Tools/RealESRGAN/realesrgan-ncnn-vulkan"

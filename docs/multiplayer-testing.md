@@ -1,6 +1,14 @@
 # Multiplayer playtest results
 
-These v5.5 LAN sessions ran two Windows game processes with different frame rates, added network delay and packet loss. Physical SteamOS-to-Windows play is the remaining cross-platform test. The public `v5.5-lan.3` patch packages the same game executable as `v5.5-lan.2`.
+## Co-op names in v5.5-lan.4
+
+The gallery sessions used **Bimbo** and **Gyurcsany** on two Windows game instances for LAN and on a single instance for couch co-op. Both names appear above their cows on the farm and in the shared barn, on the Darts scoreboard and in the Gopher Golf spectator view. The engine saved the four PNGs directly at 1920×1080 using HD textures and a locally installed optional HD font.
+
+The five standalone Win32 tests passed. The name test covers English and Hungarian scorecards with the host and guest swapped. A playthrough of this release on a separate Linux machine running Proton is still pending. [Regression tests](../Tools/tests/netplay/README.md)
+
+## Earlier v5.5 LAN sessions
+
+These sessions ran two Windows game processes with different frame rates, added network delay and packet loss. The `v5.5-lan.3` patch packaged the same game executable as `v5.5-lan.2`.
 
 | Game | What happened on both players' screens |
 | --- | --- |

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Player/ACoopMinigame.h"
+#include "Player/ACoopPartner.h"
 #include "Player/ACoopMinigameTiming.h"
 #include "AGateCrashGuestView.h"
 #include "AGateCrashMinigameState.h"
@@ -182,6 +183,9 @@ TBOOL ValidMudFrame( const MudSpectatorFrame& frame )
 TBOOL AGateCrashMinigameState::OnUpdate( TFLOAT dt )
 {
 	const TBOOL realtime = ACoopMinigame::IsRealtimeMud( this );
+	static TUINT nameRevision = 0;
+	if ( realtime && ACoopMinigame::PlayerNamesChanged(nameRevision) )
+		for ( TINT i = 0; i < 2; ++i ) m_aPlayerFloats[i].SetDisplayName(ACoopPartner::GetPlayerName(i));
 	// Both peers must reach the ready barrier, including the display-only peer.
 	if ( realtime ) ACoopMinigame::CanUpdate( this );
 	if ( realtime && !ACoopMinigame::IsRealtimeMudHost() && !ACoopMinigame::IsSpectating( this ) )
@@ -789,7 +793,8 @@ void AGateCrashMinigameState::OnInsertion()
 		m_bShowPlayerFloats = TTRUE;
 		for ( TINT i = 0; i < MAX_PLAYERS; ++i )
 		{
-			m_aPlayerFloats[i].SetPlayer( i, i < 2, m_oGame.aSlots[i].GetUnit() );
+			m_aPlayerFloats[i].SetPlayer( i, i < 2, m_oGame.aSlots[i].GetUnit(),
+				i < 2 ? ACoopPartner::GetPlayerName(i) : TNULL );
 			m_aPlayerFloats[i].Hide();
 		}
 		m_bIntroPending = TFALSE;

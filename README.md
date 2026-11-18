@@ -2,22 +2,22 @@
 
 **Two-player co-op for the original Barnyard PC game.** Share a camera on the couch, or explore the farm over LAN with a camera of your own. Take turns at the dartboard, jump into the same Mud Jumpers arena, or pick another challenge from the 14 LAN minigames. Either computer can host.
 
-[**Download the patch for Windows and SteamOS**](https://github.com/mannin1337/barnyard-remaster/releases/latest) · [Install and transfer saves](RemasterTools/Patch/INSTALL.md)
+[**Download the patch for Windows and Linux (Proton)**](https://github.com/mannin1337/barnyard-remaster/releases/latest) · [Install and transfer saves](RemasterTools/Patch/INSTALL.md)
 
-![Two players on the farm in LAN co-op, standing in front of the red barn.](docs/images/farm-lan.jpg)
+![Bimbo and Gyurcsany on the farm in LAN co-op, with their names above their cows.](docs/images/farm-lan.png)
 
 ## Play together
 
-Install the patch using your own copy of the original 2006 two-disc PC game. For LAN, both players need the same remaster release and a connection to the same local network. SteamOS runs the Windows build through Proton.
+Install the patch using your own copy of the original 2006 two-disc PC game. For LAN, both players need the same remaster release and a connection to the same local network. On desktop Linux or a Steam Deck running SteamOS, add the Windows executable to Steam and select Proton. [Linux and Steam Deck setup](RemasterTools/Patch/INSTALL.md#play-on-linux-with-steam-and-proton)
 
 | Your setup | How to start |
 | --- | --- |
 | **One PC, one screen** | Connect a controller for player two. In the main menu, choose **Co-op → Same Screen**, then start or load a game. Player one can use the keyboard and mouse or another controller. |
 | **Two computers on LAN** | In the main menu, one player chooses **Co-op → Host LAN Game** and the other chooses **Co-op → Join LAN Game**. Start or load a game on each computer. The guest finds the host automatically. |
 
-On LAN you can see each other on the farm and inside the barn when you're in the same area. One player can head indoors while the other stays outside. You each keep your own save and play the story missions in your own game.
+On LAN you can see each other on the farm and inside the barn when you're in the same area. One player can head indoors while the other stays outside. You each keep your own save and play the story missions in your own game. The game uses each cow's saved name, and you can choose a different display name for a session. [Choose your co-op names](RemasterTools/Patch/INSTALL.md#choose-your-co-op-names)
 
-<img src="docs/images/couch-coop.jpg" alt="Two players sharing one camera inside the barn at night." width="520">
+<img src="docs/images/couch-coop.png" alt="Bimbo and Gyurcsany sharing a camera inside the barn at night." width="800">
 
 ## Challenge a friend
 
@@ -33,11 +33,13 @@ On the farm, open the **pause menu → LAN Minigames**. Either player can invite
 
 | Darts | Gopher Golf |
 | --- | --- |
-| [![The throwing hand and dart in front of the shared dartboard during a LAN match.](docs/images/darts-lan.jpg)](docs/images/darts-lan.jpg) | [![The spectator can see the gopher surfacing beside the golf ball during a partner's turn.](docs/images/gopher-golf.jpg)](docs/images/gopher-golf.jpg) |
+| [![Bimbo and Gyurcsany's scores above the shared dartboard during a LAN match.](docs/images/darts-lan.png)](docs/images/darts-lan.png) | [![The spectator watches the gopher surface during a match between Bimbo and Gyurcsany.](docs/images/gopher-golf.png)](docs/images/gopher-golf.png) |
+
+All four screenshots are native 1920×1080 game frames. They use HD textures, 8× MSAA, 16× anisotropic filtering and the highest detail and shadow settings.
 
 ## The PC remaster
 
-The DirectX 11 renderer runs on Windows and on SteamOS through Proton. Choose Xbox or PlayStation button prompts, play in English or select the optional Hungarian translation, and build HD textures from your own game files. [Installation guide](RemasterTools/Patch/INSTALL.md) · [HD texture guide](Tools/hd/README.md)
+The remaster uses a DirectX 11 renderer. Choose Xbox or PlayStation button prompts, play in English or select the optional Hungarian translation, and build HD textures from your own game files. [Installation guide](RemasterTools/Patch/INSTALL.md) · [HD texture guide](Tools/hd/README.md)
 
 For developers, the source includes the Win32 DX11 build scripts and the LAN regression tests. The playtest notes record how the host and guest behaved under different frame rates, latency and packet loss. [Build from source](BUILDING.md) · [Run the LAN tests](Tools/tests/netplay/README.md) · [Multiplayer playtest results](docs/multiplayer-testing.md)
 

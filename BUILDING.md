@@ -1,6 +1,6 @@
 # Build Barnyard Remaster from source
 
-Build the game on Windows for **Win32 / Release / Direct3D 11**. The resulting executable also runs through Proton on SteamOS. To play the published version with a friend, start with the [installation and co-op guide](RemasterTools/Patch/INSTALL.md).
+The game's release build uses Visual Studio on Windows and targets **Win32 / Release / Direct3D 11**. On Linux, including SteamOS, the release uses that same executable through Steam and Proton. For the published game, follow the instructions for your platform. [Installation and co-op guide](RemasterTools/Patch/INSTALL.md)
 
 ## Prepare the build tools
 
@@ -27,7 +27,7 @@ cd barnyard-remaster
 .\Build-Remaster.ps1 -LegacySdkRoot 'C:\SDK\BarnyardSDK'
 ```
 
-The script fetches the other build dependencies from a pinned OpenBarnyard revision, checks their Git blob IDs, generates `OpenBarnyard.sln` with Premake, and compiles the game with up to two compiler processes. The executable is **`bin/Release_Win32_x86_DX11/OpenBarnyard/OpenBarnyard.exe`**. To try it, create a separate playable installation from your original PC game using the patch, replace `OpenBarnyard/OpenBarnyard.exe` in that installation with your build, and run the launcher at its root. [Installation guide](RemasterTools/Patch/INSTALL.md)
+The script fetches the other build dependencies from a pinned OpenBarnyard revision, checks their Git blob IDs, generates `OpenBarnyard.sln` with Premake, and compiles the game with up to two compiler processes. The executable is **`bin/Release_Win32_x86_DX11/OpenBarnyard/OpenBarnyard.exe`**. To try it, create a separate playable installation from your original PC game using the patch. Replace `OpenBarnyard/OpenBarnyard.exe` in that installation with your build, then use the Windows launcher or the installed game's Steam shortcut on Linux. [Installation guide](RemasterTools/Patch/INSTALL.md)
 
 | Build option | When to use it |
 |---|---|
@@ -35,7 +35,7 @@ The script fetches the other build dependencies from a pinned OpenBarnyard revis
 | `-UpstreamDirectory 'C:\Source\OpenBarnyard'` | Use a local upstream Git clone for an offline build. Its object database must contain the pinned revision. [Pinned upstream revision](https://github.com/InfiniteC0re/OpenBarnyard/tree/f359e963c9256c608951b863a16c2eefaa352823) |
 | `BARNYARD_LEGACY_SDK` | Set this environment variable to the SDK directory to reuse it across builds without passing `-LegacySdkRoot` each time. |
 
-To exercise the LAN input and spectator code separately, use the four standalone [netplay regression tests](Tools/tests/netplay/README.md).
+The standalone LAN tests build directly on Linux with CMake and a C++17 compiler. [Run the netplay regression tests](Tools/tests/netplay/README.md)
 
 ## Optional Hungarian text and subtitles
 

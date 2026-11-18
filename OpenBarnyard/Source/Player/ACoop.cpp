@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ACoop.h"
 #include "ACoopNet.h"
+#include "ACoopPartner.h"
 #include "APlayerManager.h"
 #include "APlayerProfileManager.h"
 #include "Helpers/AGameLoader.h"
@@ -438,6 +439,8 @@ void ACoop::Update( TFLOAT a_fDeltaTime )
 
 	if ( !pSecondSteer )
 		return;
+
+	ACoopPartner::EnsureWorldHud();
 
 	const TVector4 vFirstPosition  = *pFirstSteer->GetPosition();
 	const TVector4 vSecondPosition = *pSecondSteer->GetPosition();

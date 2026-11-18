@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "ABarnYardPoolMiniGameState.h"
 #include "Player/ACoopMinigame.h"
-#include "Locale/AModStrings.h"
+#include "Player/ACoopPartner.h"
 #include "AOptions.h"
 #include "Cameras/ACamera.h"
 #include <Input/TInputDeviceMouse.h>
@@ -430,7 +430,7 @@ void ABarnYardPoolMiniGameState::OnInsertion()
 	m_oHud.Create( &m_oPowerBar.GetBarElement(), &m_GUIElement );
 
 	APlayerSimProfile* pProfile = APlayerProfileManager::GetSingleton()->GetMainProfile();
-	m_oHud.SetTeamPlayer( pProfile->GetHideTextureName( -1, APlayerProfile::GENDER_NONE ), pProfile->GetName().GetString( 0 ), 0 );
+	m_oHud.SetTeamPlayer( pProfile->GetHideTextureName( -1, APlayerProfile::GENDER_NONE ), GetTeamDisplayName( 0 ), 0 );
 	m_oHud.SetTeamsVisible( TFALSE );
 
 	ResetGame();
@@ -439,7 +439,8 @@ void ABarnYardPoolMiniGameState::OnInsertion()
 	AGameTimeFXManager* pGameTimeFX = AGameTimeFXManager::GetSingleton();
 	pGameTimeFX->SetForcedFX( pGameTimeFX->FindFX( "Pool" ) );
 
-	m_wszOpponentName = ALocaleManager::Interface()->GetString( LOCALE_DUKE );
+	m_wszOpponentName = ACoopMinigame::IsRealtimePool(this) ? ACoopPartner::GetPlayerName(1) :
+		ALocaleManager::Interface()->GetString( LOCALE_DUKE );
 	m_oHud.SetTeamPlayer( "Duke", m_wszOpponentName, 1 );
 
 	m_bUnkD9B = TTRUE;

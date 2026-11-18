@@ -255,6 +255,8 @@ private:
 
 	// Sets up a new game: racks the balls, the camera views, the teams and the HUD
 	void ResetGame();
+	const TWCHAR* GetTeamDisplayName( TINT a_iTeam ) const;
+	void ShowCoopTurn( TINT a_iTeam );
 
 	// Places the balls: the cue ball at a_vCueBall and the others in a triangle around a_vBlack
 	void RackBalls( Toshi::TVector4 a_vBlack, Toshi::TVector4 a_vCueBall, TFLOAT a_fBallRadius );

@@ -61,7 +61,7 @@ AMiniGamePlayerFloat::~AMiniGamePlayerFloat()
 }
 
 // $Barnyard: FUNCTION 00456810
-TBOOL AMiniGamePlayerFloat::SetPlayer( TINT a_iSlot, TBOOL a_bHuman, AUnit* a_pUnit )
+TBOOL AMiniGamePlayerFloat::SetPlayer( TINT a_iSlot, TBOOL a_bHuman, AUnit* a_pUnit, const TWCHAR* a_wszDisplayName )
 {
 	TUINT32 uiColour;
 
@@ -93,22 +93,27 @@ TBOOL AMiniGamePlayerFloat::SetPlayer( TINT a_iSlot, TBOOL a_bHuman, AUnit* a_pU
 	GetScreenPosition( a_pUnit, HEIGHT_OFFSET, vecScreenPos );
 
 	T2GUIFont* pFont = T2GUIFontManager::FindFont( "Rekord26" );
-	m_oText.Create( pFont, pFont->GetTextWidth( m_wszLabel, 1.0f ) );
-	m_oText.SetText( m_wszLabel );
-	m_oText.SetWidth( pFont->GetTextWidth( m_wszLabel, 1.0f ) * m_oText.GetScale() );
+	m_oText.Create( pFont, 0.0f );
+	SetDisplayName( a_wszDisplayName );
 
 	AddChildTail( m_oText );
 	AGUI2::GetRootElement()->AddChildTail( *this );
 
 	SetAlpha( 1.0f );
 	SetAttachment( T2GUIATTACHMENT_TOPLEFT, T2GUIATTACHMENT_TOPLEFT );
-	SetDimensions( m_oText.GetWidth(), m_oText.GetHeight() );
 	SetTransform( vecScreenPos.x - GetWidth() * 0.5f, vecScreenPos.y - GetHeight() * 0.5f, 0.0f );
 
 	m_bEnabled = TFALSE;
 	m_fScale   = 1.0f;
 
 	return TTRUE;
+}
+
+void AMiniGamePlayerFloat::SetDisplayName( const TWCHAR* a_wszDisplayName )
+{
+	m_oText.SetTextAndFitWidth( a_wszDisplayName ? a_wszDisplayName : m_wszLabel );
+	m_oText.SetShadow( a_wszDisplayName != TNULL, 0xd0000000 );
+	SetDimensions( m_oText.GetWidth(), m_oText.GetHeight() );
 }
 
 // $Barnyard: FUNCTION 004569d0

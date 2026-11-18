@@ -17,7 +17,20 @@ Install the patch using your own copy of the original 2006 two-disc PC game. For
 
 On LAN you can see each other on the farm and inside the barn when you're in the same area. One player can head indoors while the other stays outside. You each keep your own save and play the story missions in your own game. The game uses each cow's saved name, and you can choose a different display name for a session. [Choose your co-op names](RemasterTools/Patch/INSTALL.md#choose-your-co-op-names)
 
-<img src="docs/images/couch-coop.png" alt="Bimbo and Gyurcsany sharing a camera inside the barn at night." width="800">
+### Couch co-op on one screen
+
+In **Same Screen**, one camera keeps both cows in view. Here Bimbo and Gyurcsany are inside the barn together.
+
+[![Bimbo and Gyurcsany with name tags above their cows, sharing one view of the barn.](docs/images/couch-coop.png)](docs/images/couch-coop.png)
+
+### LAN co-op from both players' screens
+
+The two screenshots in each row come from the same LAN session. On the farm, Bimbo looks toward the red barn while Gyurcsany looks back toward the open shed. In Darts, both players can see the orange dart in Bimbo's hand before the fifth throw. Both scoreboards read 95–20.
+
+| Bimbo's screen (host) | Gyurcsany's screen (guest) |
+| --- | --- |
+| **Farm**<br>[![Bimbo faces the red barn with Gyurcsany standing under the apple tree.](docs/images/lan-farm-bimbo.png)](docs/images/lan-farm-bimbo.png) | **Farm**<br>[![Gyurcsany looks back at Bimbo by the bed in the open shed.](docs/images/lan-farm-gyurcsany.png)](docs/images/lan-farm-gyurcsany.png) |
+| **Darts · aiming**<br>[![Bimbo aims the orange dart. The scoreboard says Your turn (Bimbo).](docs/images/lan-darts-bimbo.png)](docs/images/lan-darts-bimbo.png) | **Darts · spectating**<br>[![Gyurcsany sees Bimbo's hand holding the dart and the message Watching your partner (Bimbo).](docs/images/lan-darts-gyurcsany.png)](docs/images/lan-darts-gyurcsany.png) |
 
 ## Challenge a friend
 
@@ -35,7 +48,7 @@ On the farm, open the **pause menu → LAN Minigames**. Either player can invite
 | --- | --- |
 | [![Bimbo and Gyurcsany's scores above the shared dartboard during a LAN match.](docs/images/darts-lan.png)](docs/images/darts-lan.png) | [![The spectator watches the gopher surface during a match between Bimbo and Gyurcsany.](docs/images/gopher-golf.png)](docs/images/gopher-golf.png) |
 
-All four screenshots are native 1920×1080 game frames. They use HD textures, 8× MSAA, 16× anisotropic filtering and the highest detail and shadow settings.
+Each screenshot is a native 1920×1080 game frame with HD textures, 8× MSAA, 16× anisotropic filtering and the highest detail and shadow settings.
 
 ## The PC remaster
 

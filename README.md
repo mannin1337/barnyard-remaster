@@ -2,9 +2,9 @@
 
 **A DirectX 11 fan remaster of the 2006 Barnyard PC game for Windows and Linux (via Proton).** Play the original story with soft sun shadows, wind in the grass and trees, and optional HD textures built from your copy of the game. Share a camera on the couch or explore the farm from two computers. We also added two-player LAN modes to 14 of the original game's single-player minigames.
 
-[**Download the patch**](https://github.com/mannin1337/barnyard-remaster/releases/latest) · [Install and transfer saves](RemasterTools/Patch/INSTALL.md) · [Graphics and shadows](#directx-11-shaders-and-shadows) · [Couch and LAN co-op](#play-together)
+[**Download the patch**](https://github.com/mannin1337/barnyard-remaster/releases/latest) · [Install and transfer saves](RemasterTools/Patch/INSTALL.md) · [Graphics and shadows](#directx-11-shaders-and-shadows) · [Couch and LAN co-op](#play-together) · [14 minigame screenshots](#minigame-gallery)
 
-![Bimbo and Gyurcsany on the farm in LAN co-op, with their names above their cows.](docs/images/farm-lan.png)
+![Bimbo and Gyurcsany beside the red barn, with the apple trees casting shadows across the dirt path.](docs/images/farm-lan.png)
 
 ## DirectX 11, shaders and shadows
 
@@ -56,16 +56,42 @@ All 14 activities below are playable solo in the original PC game. For this rema
 | Jump and kick in the same arena, alongside two AI opponents | **Mud Jumpers** |
 | Take turns on the same board or table and watch your partner's shot | **Darts**, **Barnyard Pool** |
 | Play a turn on your own computer while your partner spectates, then swap | **Gopher Golf**, **Chicken Launch**, **Whack-a-Rac** |
-| Play the same challenge on each computer and compare scores | **Tease the Mailman**, **Tease Mrs. Beady**, **Chasing Chicks**, **Vegetable Patch Defender**, **Cow Tipping**, **Milk Bar** |
+| Play the same challenge on each computer and compare scores | **Tease the Mailman**, **Tease Mrs Beady**, **Chasing Chicks**, **Veggie Patch Defender**, **Cow Tipping**, **Milk Bar** |
 | Race on each computer and compare finish times | **Bike Race**, **Joy Ride** |
 
 When you play as the guest, you can lock both Darts aim bars, start a Pool shot or jump in Mud Jumpers while your input is still travelling to the host. The host settles shared hits and scores. [Input timing and LAN playtest results](docs/multiplayer-testing.md#lan-input-timing-in-v55-lan5)
 
-| Darts | Gopher Golf |
-| --- | --- |
-| [![Bimbo and Gyurcsany's scores above the shared dartboard during a LAN match.](docs/images/darts-lan.png)](docs/images/darts-lan.png) | [![The spectator watches the gopher surface during a match between Bimbo and Gyurcsany.](docs/images/gopher-golf.png)](docs/images/gopher-golf.png) |
+### Minigame gallery
 
-Each screenshot is a native 1920×1080 game frame with HD textures, 8× MSAA, 16× anisotropic filtering and the highest detail and shadow settings.
+Select a screenshot to open the full 1920 × 1080 frame from Bimbo and Gyurcsany's LAN sessions. We captured these in the game with HD textures, 8× MSAA, 16× anisotropic filtering and the highest detail and shadow settings.
+
+| Chicken Launch | Whack-a-Rac |
+| --- | --- |
+| [![Bimbo tumbles backward in a cloud of feathers beside the chicken launcher.](docs/images/minigames/previews/chicken-launch.webp)](docs/images/minigames/chicken-launch.webp)<br>Launch Peck through the rings while your friend watches his flight. | [![Two toy raccoons pop up in the middle of the board with Bimbo leading 1–0.](docs/images/minigames/previews/whack-a-rac.webp)](docs/images/minigames/whack-a-rac.webp)<br>Hit the toy raccoons and coyotes, and spare the chickens. |
+
+| Gopher Golf | Mud Jumpers |
+| --- | --- |
+| [![Gyurcsany watches Bimbo's gopher surface beside the golf ball.](docs/images/minigames/previews/gopher-golf.webp)](docs/images/gopher-golf.png)<br>Tee off, then steer your gopher underground to retrieve the ball. | [![Gyurcsany's view of Bimbo lifting a hoof to kick the pipe across the muddy arena.](docs/images/minigames/previews/mud-jumpers.webp)](docs/images/minigames/mud-jumpers.webp)<br>Jump the pipe or kick it back at your friend and the two computer-controlled cows. |
+
+| Darts | Barnyard Pool |
+| --- | --- |
+| [![Bimbo aims at the dartboard with Gyurcsany leading 120–0.](docs/images/minigames/previews/darts.webp)](docs/images/darts-lan.png)<br>Take turns throwing at the same board and watch your friend's aim. | [![Bimbo watches as Gyurcsany lines up the second shot towards a red ball.](docs/images/minigames/previews/barnyard-pool.webp)](docs/images/minigames/barnyard-pool.webp)<br>Clear your colour, then pocket the black ball to win. |
+
+| Tease the Mailman | Tease Mrs Beady |
+| --- | --- |
+| [![A cow crouches behind the mailman while three farm animals peek out from behind a tree.](docs/images/minigames/previews/tease-the-mailman.webp)](docs/images/minigames/tease-the-mailman.webp)<br>Pose behind the mailman's back and drop to all fours before he turns around. | [![Mrs Beady turns in her armchair as a cow peeks through the living-room window.](docs/images/minigames/previews/tease-mrs-beady.webp)](docs/images/minigames/tease-mrs-beady.webp)<br>Strike a pose outside Mrs Beady's window, then duck before Mr Beady spots you. |
+
+| Chasing Chicks | Veggie Patch Defender |
+| --- | --- |
+| [![Two cows cross paths near the red barn as yellow chicks scatter along the farmyard trail.](docs/images/minigames/previews/chasing-chicks.webp)](docs/images/minigames/chasing-chicks.webp)<br>Stand in a scoring ring and toss a chick back into the coop. | [![A cow fires a jet of milk between vegetable rows beside a pumpkin-headed scarecrow.](docs/images/minigames/previews/vegetable-patch-defender.webp)](docs/images/minigames/vegetable-patch-defender.webp)<br>Squirt the raiding raccoons and throw them out before they steal the vegetables. |
+
+| Bike Race | Joy Ride |
+| --- | --- |
+| [![Bimbo's bike is airborne above a hillside trail on the first lap.](docs/images/minigames/previews/bike-race.webp)](docs/images/minigames/bike-race.webp)<br>Race the Jersey Cows, then compare your finish time with your friend's. | [![Sparks fly as Bimbo scrapes a fence at 129 km/h on a nighttime Joy Ride.](docs/images/minigames/previews/joy-ride.webp)](docs/images/minigames/joy-ride.webp)<br>Drive the farmer's pickup back to the farm. The faster finish wins. |
+
+| Cow Tipping | Milk Bar |
+| --- | --- |
+| [![Bimbo aims a tomato launcher across a moonlit pasture dotted with sleeping cows.](docs/images/minigames/previews/cow-tipping.webp)](docs/images/minigames/cow-tipping.webp)<br>Lob tomatoes at the kids before they can tip the sleeping cows. | [![A cow fills a pink milkshake at the tap while another waits at the checkered counter.](docs/images/minigames/previews/milk-bar.webp)](docs/images/minigames/milk-bar.webp)<br>Serve the thirsty customers without dropping a glass. |
 
 ## Build and test
 

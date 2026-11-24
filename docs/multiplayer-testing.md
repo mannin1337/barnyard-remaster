@@ -58,6 +58,10 @@ The installer verified all 5,393 original data files and both retail runtime lib
 
 In a second full Darts match the players finished at **35–0** after three rounds and 30 throws each. All **60 guest aim coordinates** matched the host's accepted values. Across all **60 throws**, the guest's hand model was attached, drawable and in the camera view for either thrower. Both processes returned to the farm with their saved state intact.
 
+### Mud Jumpers character appearance
+
+In a later gallery session, Bimbo hosted as a female Holstein and Gyurcsany joined as a male Angus. On the host, Bimbo's cow appeared solid purple. The guest showed a different cow model with a textured coat in Bimbo's place. The mismatch was visible in all three pairs of frames, taken at 37, 43 and 49 seconds. The Mud Jumpers screenshot in the gallery shows the guest's view. [Minigame gallery](../README.md#minigame-gallery)
+
 ## Co-op names in v5.5-lan.4
 
 The gallery sessions used **Bimbo** and **Gyurcsany** on two Windows game instances for LAN and on a single instance for couch co-op. Both names appear above their cows on the farm and in the shared barn, on the Darts scoreboard and in the Gopher Golf spectator view. The engine saved the four PNGs directly at 1920×1080 using HD textures and a locally installed optional HD font.

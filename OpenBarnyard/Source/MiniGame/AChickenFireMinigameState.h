@@ -394,4 +394,5 @@ private:
 	TINT                                    m_iUnk_30F8;                    // 0x30f8
 	AWindmillHelper                         m_oWindmillHelper;              // 0x30fc
 	TFLOAT                                  m_fSavedWindDirection;          // 0x3194, AWindmillHelper::ms_fWindDirection, cleared while the minigame runs
+	TUINT                                   m_bashSample[MAX_PLAYERS] = {};
 };

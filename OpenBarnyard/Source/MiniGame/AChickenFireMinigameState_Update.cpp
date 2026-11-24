@@ -16,6 +16,7 @@
 #include "Locale/ALocaleManager.h"
 #include "Player/APlayerManager.h"
 #include "Player/ACoopMinigame.h"
+#include "Debug/AInputLatency.h"
 #include "Sound/AMusicManager.h"
 #include "Sound/ASoundManager.h"
 #include "SoundBank/launch.h"
@@ -100,6 +101,7 @@ TBOOL AChickenFireMinigameState::OnUpdate( TFLOAT a_fDeltaTime )
 				m_eState = STATE_BASHING;
 				ASoundManager::GetSingleton()->PlayCueAtPosition( soundbank::LAUNCH_STRETCH, m_vPeckPos );
 				m_pPlayerModel->PlayAnimation( TPS8( americanm_pullback ) );
+				AInputLatency::Action(m_bashSample[APlayerManager::GetSingleton()->GetCurrentPlayerIterator()], "chicken", "pullback-start");
 				PlayPeckAnimation( TPS8( launchPullBack ) );
 
 				m_fPower += m_fBashInc;
@@ -463,6 +465,7 @@ void AChickenFireMinigameState::UpdateBashing( TFLOAT a_fDeltaTime )
 	if ( rInput.bBash == TTRUE )
 	{
 		m_fPower += m_fBashInc;
+		AInputLatency::Action(m_bashSample[APlayerManager::GetSingleton()->GetCurrentPlayerIterator()], "chicken", "power-added");
 		rInput.bCmd57 = TFALSE;
 
 		if ( m_fPower > 0.5f && !ASoundManager::GetSingleton()->IsCueUsed( m_iCue_C4C ) )

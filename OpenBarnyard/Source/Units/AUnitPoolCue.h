@@ -48,6 +48,7 @@ public:
 
 	// Position of the cue ball.
 	void SetCueBallPosition( const Toshi::TVector4& a_rcPosition );
+	void UpdateAimPose();
 
 	// Position of the model of the cue.
 	Toshi::TVector4 GetCuePosition();

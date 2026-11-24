@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "AGolfMinigameState.h"
+#include "Debug/AInputLatency.h"
 #include "AMiniGameManager.h"
 #include "Animation/AAnimatableObject.h"
 #include "Animation/AAnimatableObjectManager.h"
@@ -376,7 +377,10 @@ TBOOL AGolfMinigameState::ProcessCommand( AInputCommand a_eInputCommand, const T
 			if ( a_pInputEvent->GetEventType() != TInputInterface::EVENT_TYPE_GONE_DOWN )
 				m_aPlayers[ iPlayer ].bSwingReleased = TTRUE;
 			else
+			{
 				m_aPlayers[ iPlayer ].bSwingPressed = TTRUE;
+				m_swingPressSample[iPlayer] = AInputLatency::Current();
+			}
 
 			return TTRUE;
 	}

@@ -1,4 +1,5 @@
 #pragma once
+#include "AWhackInput.h"
 #include "AMiniGameState.h"
 #include "GUI/AGUI2FadingText.h"
 #include "GUI/AGUI2FloatHudElement.h"
@@ -226,7 +227,8 @@ public:
 		TINT            iNumMisses2;     // 0x20
 		TINT            iMalletHole;     // 0x24, the hole the mallet goes for
 		TINT            eMalletState;    // 0x28, MALLETSTATE_
-		TUINT8          PADDING1[ 8 ];   // 0x2c
+		TUINT           swingSample = 0; // 0x2c, local input diagnostic
+		WhackInput::KeyAxis columnKeys, rowKeys; // 0x30, held directions for this player
 		Toshi::TVector4 vUnk1;           // 0x34, (0, 0, -1)
 		Toshi::TVector4 vBadRingPos;     // 0x44
 		Toshi::TVector4 vUnk2;           // 0x54, (0, 0, -1)
@@ -286,6 +288,7 @@ private:
 	void CaptureSpectatorFrame( AWhackSpectatorFrame& a_rFrame );
 	void ApplySpectatorFrame( const AWhackSpectatorFrame& a_rFrame, TBOOL a_bFresh, TBOOL a_bSpectating );
 	void SetSpectatorMode( TBOOL a_bSpectating );
+	void UpdateMouseTarget();
 
 	void LoadData();                             // 004d8a40
 	void ShowMessage( const TWCHAR* a_wszText ); // 004d8f40

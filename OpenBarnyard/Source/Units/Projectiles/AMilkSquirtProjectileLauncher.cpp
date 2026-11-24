@@ -1,6 +1,8 @@
 #include "pch.h"
+#include "Debug/AInputLatency.h"
 #include "AMilkSquirtProjectileLauncher.h"
 #include "AMilkProjectile.h"
+#include "ASimpleProjectileManager.h"
 #include "ARandom.h"
 #include "FX/AMilkManager.h"
 #include "FX/AParticleEffectManager.h"
@@ -346,6 +348,15 @@ void AMilkSquirtProjectileLauncher::Fire()
 		TVector4 vDirection = GetLaunchDirection();
 		TVector4 vPosition  = GetLaunchPosition();
 		AParticleEffectManager::GetSingleton()->PlayEffect( m_iMuzzleFlashEffect, vPosition, vDirection );
+
+		if ( const TUINT sample = AInputLatency::Current() )
+		{
+			const TINT type = GetAmmo()->GetProjectileType();
+			if ( type == ASimpleProjectileManager::TYPE_CHASING_CHICKS_MILK )
+				AInputLatency::Action( sample, "chicks", "squirt" );
+			else if ( type == ASimpleProjectileManager::TYPE_VEGGIE_DEFENDER_MILK )
+				AInputLatency::Action( sample, "veggie", "squirt" );
+		}
 
 		m_fSquirtTimeLeft = 0.3f;
 		m_bNewStream      = TTRUE;

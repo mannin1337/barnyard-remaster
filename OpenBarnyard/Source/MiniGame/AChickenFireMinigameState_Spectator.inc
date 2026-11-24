@@ -27,17 +27,17 @@ struct Frame
 };
 static_assert(sizeof(Frame) <= 1000, "Chicken spectator frame exceeds channel limit");
 
-static void BlendTransform(TMatrix44& shown, const TMatrix44& next, TFLOAT alpha)
+static void BlendTransform(TMatrix44& shown, const TMatrix44& start, TFLOAT alpha)
 {
-    // Peck's native maximum flight speed is 60 units/s. The playback buffer
-    // resets after 200 ms, so a larger displacement is a camera cut or teleport.
+    // Peck flies at up to 60 units/s. A jump this large within the 200 ms
+    // reset window is a cut or teleport, so keep the incoming transform.
     const TVector4 position = shown.GetTranslation();
-    if (TVector4::DistanceSq(position, next.GetTranslation()) > 16.0f * 16.0f) return;
-    if (shown.IsOrthonormal() && next.IsOrthonormal())
+    if (TVector4::DistanceSq(start.GetTranslation(), position) > 16.0f * 16.0f) return;
+    if (start.IsOrthonormal() && shown.IsOrthonormal())
     {
         TQuaternion from, to, rotation;
-        TMatrix44::MatToQuat(from, shown);
-        TMatrix44::MatToQuat(to, next);
+        TMatrix44::MatToQuat(from, start);
+        TMatrix44::MatToQuat(to, shown);
         if (std::fabs(from.MagnitudeSq() - 1.0f) < 0.002f &&
             std::fabs(to.MagnitudeSq() - 1.0f) < 0.002f)
         {
@@ -45,27 +45,26 @@ static void BlendTransform(TMatrix44& shown, const TMatrix44& next, TFLOAT alpha
             shown.SetFromQuaternion(rotation);
         }
     }
-    shown.GetTranslation().Lerp4(position, next.GetTranslation(), alpha);
+    shown.GetTranslation().Lerp4(start.GetTranslation(), position, alpha);
 }
 
-static void BlendPresentation(Frame& shown, const Frame& next, TFLOAT alpha)
+static void BlendPresentation(Frame& shown, const Frame& start, TFLOAT alpha)
 {
-    // Discrete state, visibility, clip changes and camera cuts switch when the
-    // presentation clock reaches the next sample. Never mix two launch phases.
-    if (shown.state != next.state) return;
-    BlendTransform(shown.camera, next.camera, alpha);
-    shown.fov += (next.fov - shown.fov) * alpha;
+    // State, visibility and clips already describe the newest packet.
+    if (shown.state != start.state) return;
+    BlendTransform(shown.camera, start.camera, alpha);
+    shown.fov = start.fov + (shown.fov - start.fov) * alpha;
     for (TINT i = 0; i < 4; ++i)
     {
         Pose& pose = shown.poses[i];
-        const Pose& target = next.poses[i];
-        if (!pose.shown || !target.shown || std::strcmp(pose.type, target.type) ||
-            (i == 3 && shown.card != next.card)) continue;
-        BlendTransform(pose.matrix, target.matrix, alpha);
-        const TFLOAT step = target.animationTime - pose.animationTime;
-        if (step >= 0.0f && step < 0.4f && !std::strcmp(pose.set, target.set) &&
-            !std::strcmp(pose.animation, target.animation))
-            pose.animationTime += step * alpha;
+        const Pose& previous = start.poses[i];
+        if (!pose.shown || !previous.shown || std::strcmp(pose.type, previous.type) ||
+            (i == 3 && shown.card != start.card)) continue;
+        BlendTransform(pose.matrix, previous.matrix, alpha);
+        const TFLOAT step = pose.animationTime - previous.animationTime;
+        if (step >= 0.0f && step < 0.4f && !std::strcmp(pose.set, previous.set) &&
+            !std::strcmp(pose.animation, previous.animation))
+            pose.animationTime = previous.animationTime + step * alpha;
     }
 }
 

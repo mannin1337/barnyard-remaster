@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "Player/ACoopMinigame.h"
+#include "Debug/AInputLatency.h"
 #include "AWhackARaccMiniGameState.h"
+#include "ASpectatorBlendClock.h"
 #include "AMiniGameManager.h"
 #include "ARandom.h"
 #include "Tasks/ARootTask.h"
@@ -97,10 +99,6 @@ static const TVector4 s_vDialDir( 0.0f, 0.0f, -1.0f, 1.0f );   // 0077d034
 // The level the game starts at (never written)
 static TINT s_iStartLevel = 0; // 00783268
 
-// Whether the stick/keys hold the ring off the middle row/column
-static TBOOL s_bRowHeld = TFALSE; // 0078329c
-static TBOOL s_bColHeld = TFALSE; // 0078329d
-
 // Squared distance of a_rcPoint to the line through a_rcLineStart and a_rcLineEnd
 // $Barnyard: FUNCTION 006b8ba0
 static TFLOAT DistancePointToLineSq( const TVector4& a_rcPoint, const TVector4& a_rcLineStart, const TVector4& a_rcLineEnd )
@@ -170,7 +168,7 @@ struct WhackView
 	WhackFrame own{}, current{}, start{}, target{};
 	WhackObjectBackup objects[ WHACK_VIEW_OBJECTS ];
 	TUINT32 serial = 0, receivedSerial = 0;
-	TFLOAT age = 0, duration = 0, elapsed = 0;
+	ASpectatorBlendClock timing;
 	TBOOL startHidden, timeHidden, pickupHidden, guiVisible, levelVisible;
 } s_whackView;
 
@@ -497,7 +495,7 @@ void AWhackARaccMiniGameState::SetSpectatorMode( TBOOL spectating )
 		s_whackView.owner = this;
 		s_whackView.current = s_whackView.own;
 		s_whackView.receivedSerial = 0;
-		s_whackView.age = s_whackView.elapsed = s_whackView.duration = 0;
+		s_whackView.timing = {};
 #if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
 		s_whackProbe.enabled = TStringManager::String8FindString( AGameLoader::Dev_GetCommandLine(), "-coopminigame" ) != TNULL;
 		s_whackProbe.actor = -1;
@@ -518,6 +516,9 @@ void AWhackARaccMiniGameState::SetSpectatorMode( TBOOL spectating )
 		}
 		m_oStartHudElement.SetForceHide( TTRUE );
 		m_oLevelText.Hide();
+		// Keep the saved local scene still until the first remote pose arrives.
+		for ( TINT i = 0; i < 13; ++i ) SpectatorObject( i )->SetAnimSpeed( 0 );
+		m_pMallet->SetAnimSpeed( 0 );
 		TINFO( "[coopmini-view] whack spectator entered (native state preserved)\n" );
 		return;
 	}
@@ -561,37 +562,27 @@ TBOOL AWhackARaccMiniGameState::OnUpdate( TFLOAT dt )
 	{
 		if ( s_whackView.owner != this ) SetSpectatorMode( TTRUE );
 		auto& view = s_whackView;
-		view.age += dt;
 		WhackFrame frame;
 		const TBOOL fresh = ACoopMinigame::ReadSpectatorFrame( this, &frame, sizeof( frame ) ) &&
 			( !view.receivedSerial || TINT32( frame.serial - view.receivedSerial ) > 0 ) && ValidWhackFrame( frame );
+		TBOOL cut = TFALSE;
+		const TBOOL blending = view.timing.IsBlending();
 		if ( fresh )
 		{
 			const TBOOL first = !view.receivedSerial;
-			const TBOOL cut = first || view.age >= 0.2f || frame.level != view.target.level ||
+			cut = first || frame.level != view.target.level ||
 				frame.elapsed < view.target.elapsed || frame.timeLimit != view.target.timeLimit ||
 				( ( frame.flags ^ view.target.flags ) & 3 ) != 0;
 			view.start = view.current;
 			view.target = frame;
 			view.receivedSerial = frame.serial;
-			view.duration = cut ? 0.0f : TMath::Max( 1.0f / 30.0f, TMath::Min( view.age, 0.1f ) );
-			view.age = view.elapsed = 0;
 			if ( first ) TINFO( "[coopmini-view] whack live frame applied serial=%u score=%d bytes=%u\n", frame.serial, frame.score, TUINT( sizeof( frame ) ) );
 		}
-		if ( fresh || view.elapsed < view.duration )
+		const TFLOAT t = view.timing.Advance( dt, fresh, cut );
+		if ( fresh || blending )
 		{
-			view.elapsed += dt;
-			const TFLOAT t = view.elapsed < view.duration ? view.elapsed / view.duration : 1.0f;
 			BlendWhackFrame( view.current, view.start, view.target, t, m_aHoles );
 			ApplySpectatorFrame( view.current, fresh, TTRUE );
-		}
-		// Before the first packet the saved local scene may still have live clips.
-		if ( !view.receivedSerial && view.age > 0.5f )
-		{
-			// Disabling skeleton updates also disables rendering in TSceneObject.
-			// Stop animation time instead, keeping the last received pose visible.
-			for ( TINT i = 0; i < 13; ++i ) SpectatorObject( i )->SetAnimSpeed( 0 );
-			m_pMallet->SetAnimSpeed( 0 );
 		}
 		return AGameState::OnUpdate( dt );
 	}
@@ -819,6 +810,7 @@ void AWhackARaccMiniGameState::ResetLevel( TBOOL a_bNewGame )
 	for ( TINT i = 0; i < MAX_PLAYERS; i++ )
 	{
 		Player& rPlayer      = m_aPlayers[ i ];
+		rPlayer.rowKeys      = rPlayer.columnKeys = {};
 		rPlayer.iRow         = 1;
 		rPlayer.iCol         = 1;
 		rPlayer.bPerfect     = TTRUE;
@@ -871,7 +863,7 @@ TBOOL AWhackARaccMiniGameState::ProcessCommand( AInputCommand a_eInputCommand, c
 			if ( a_pInputEvent->GetSource()->IsA( &TGetClass( TInputDeviceMouse ) ) )
 			{
 				// Moving the mouse switches to mouse control
-				if ( 0.0f != a_pInputEvent->GetMagnitudeFloat( 0 ) && 0.0f != a_pInputEvent->GetMagnitudeFloat( 1 ) )
+				if ( WhackInput::MouseMoved( a_pInputEvent->GetMagnitudeFloat( 0 ), a_pInputEvent->GetMagnitudeFloat( 1 ) ) )
 				{
 					m_bMouseControl = TTRUE;
 					m_bKeyboardMove = TFALSE;
@@ -890,14 +882,14 @@ TBOOL AWhackARaccMiniGameState::ProcessCommand( AInputCommand a_eInputCommand, c
 						rPlayer.iCol = 0;
 					else if ( fX > STICK_DEADZONE )
 						rPlayer.iCol = 2;
-					else if ( !s_bColHeld )
+					else if ( !rPlayer.columnKeys.Held() )
 						rPlayer.iCol = 1;
 
 					if ( fY < -STICK_DEADZONE )
 						rPlayer.iRow = 2;
 					else if ( fY > STICK_DEADZONE )
 						rPlayer.iRow = 0;
-					else if ( !s_bRowHeld )
+					else if ( !rPlayer.rowKeys.Held() )
 						rPlayer.iRow = 1;
 
 					m_bMouseControl = TFALSE;
@@ -906,79 +898,29 @@ TBOOL AWhackARaccMiniGameState::ProcessCommand( AInputCommand a_eInputCommand, c
 			}
 			break;
 		case AInputCommand_LeftWithUp:
-			// The ring goes back to the middle when the key is released
-			if ( a_pInputEvent->GetEventType() == TInputInterface::EVENT_TYPE_GONE_UP )
-			{
-				s_bColHeld = TFALSE;
-				rPlayer.iCol += 1;
-			}
-			else
-			{
-				s_bColHeld = TTRUE;
-				rPlayer.iCol -= 1;
-			}
-
-			TMath::Clip( rPlayer.iCol, 0, 2 );
-			bHandled        = TTRUE;
-			m_bMouseControl = TFALSE;
-			m_bKeyboardMove = TTRUE;
-			break;
 		case AInputCommand_RightWithUp:
-			if ( a_pInputEvent->GetEventType() == TInputInterface::EVENT_TYPE_GONE_UP )
-			{
-				s_bColHeld = TFALSE;
-				rPlayer.iCol -= 1;
-			}
-			else
-			{
-				s_bColHeld = TTRUE;
-				rPlayer.iCol += 1;
-			}
-
-			TMath::Clip( rPlayer.iCol, 0, 2 );
-			bHandled        = TTRUE;
-			m_bMouseControl = TFALSE;
-			m_bKeyboardMove = TTRUE;
-			break;
 		case AInputCommand_ForwardWithUp:
-			if ( a_pInputEvent->GetEventType() == TInputInterface::EVENT_TYPE_GONE_UP )
-			{
-				s_bRowHeld = TFALSE;
-				rPlayer.iRow -= 1;
-			}
-			else
-			{
-				s_bRowHeld = TTRUE;
-				rPlayer.iRow += 1;
-			}
-
-			TMath::Clip( rPlayer.iRow, 0, 2 );
-			bHandled        = TTRUE;
-			m_bMouseControl = TFALSE;
-			break;
 		case AInputCommand_BackwardWithUp:
-			if ( a_pInputEvent->GetEventType() == TInputInterface::EVENT_TYPE_GONE_UP )
+		{
+			const bool horizontal = a_eInputCommand == AInputCommand_LeftWithUp || a_eInputCommand == AInputCommand_RightWithUp;
+			const int direction = a_eInputCommand == AInputCommand_RightWithUp || a_eInputCommand == AInputCommand_ForwardWithUp ? 1 : -1;
+			auto& keys = horizontal ? rPlayer.columnKeys : rPlayer.rowKeys;
+			TINT& position = horizontal ? rPlayer.iCol : rPlayer.iRow;
+			if ( keys.Set( position, direction, a_pInputEvent->GetEventType() != TInputInterface::EVENT_TYPE_GONE_UP ) )
 			{
-				s_bRowHeld = TFALSE;
-				rPlayer.iRow += 1;
+				m_bMouseControl = TFALSE;
+				m_bKeyboardMove = TTRUE;
 			}
-			else
-			{
-				s_bRowHeld = TTRUE;
-				rPlayer.iRow -= 1;
-			}
-
-			TMath::Clip( rPlayer.iRow, 0, 2 );
-			bHandled        = TTRUE;
-			m_bMouseControl = TFALSE;
-			m_bKeyboardMove = TTRUE;
+			bHandled = TTRUE;
 			break;
+		}
 		case AInputCommand_Shoot:
 			if ( a_pInputEvent->GetEventType() != TInputInterface::EVENT_TYPE_GONE_DOWN || m_bBadHit )
 				break;
 
 			bHandled = TTRUE;
 
+			if ( m_bMouseControl ) UpdateMouseTarget();
 			if ( m_aHoles[ rPlayer.iHole ].fCooldown <= 0.0f && m_fWhackCooldown <= 0.0f )
 			{
 				// Swing the mallet at the hole under the ring
@@ -990,6 +932,7 @@ TBOOL AWhackARaccMiniGameState::ProcessCommand( AInputCommand a_eInputCommand, c
 				m_pMallet->FinishAnimation( TPS8( impact ) );
 
 				rPlayer.eMalletState                = MALLETSTATE_SWING;
+				rPlayer.swingSample                 = AInputLatency::Current();
 				rPlayer.iMalletHole                 = rPlayer.iHole;
 				m_aHoles[ rPlayer.iHole ].fCooldown = m_aFloats[ FLOAT_HOLE_COOLDOWN ];
 				m_fWhackCooldown                    = m_aFloats[ FLOAT_WHACK_COOLDOWN ];
@@ -1137,8 +1080,8 @@ void AWhackARaccMiniGameState::OnActivate()
 	AGUI2::GetSingleton()->SetCursorVisible( TTRUE );
 	m_pMessage->ShowIfHasText();
 
-	GetCurrentPlayer().iRow = 1;
-	GetCurrentPlayer().iCol = 1;
+	GetCurrentPlayer().rowKeys = GetCurrentPlayer().columnKeys = {};
+	WhackInput::SelectMouseHole( GetCurrentPlayer(), 4, NUM_ROWS );
 
 	m_oLevelText.Show();
 	AMiniGameState::OnActivate();
@@ -1301,8 +1244,6 @@ AMiniGameState::S1* AWhackARaccMiniGameState::GetResults()
 // $Barnyard: FUNCTION 004da480
 void AWhackARaccMiniGameState::StartTurn( TBOOL a_bNewGame )
 {
-	if ( ACoopMinigame::IsPlaying() )
-		s_bColHeld = s_bRowHeld = TFALSE;
 	for ( TINT i = 0; i < NUM_BUCKS; i++ )
 		m_aBucks[ i ].pObject->SetSkeletonUpdating( TFALSE, TTRUE );
 
@@ -1667,6 +1608,7 @@ void AWhackARaccMiniGameState::UpdateMallet( TFLOAT a_fDeltaTime )
 
 			m_pMallet->PlayAnimation( TPS8( impact ) );
 			m_pMallet->PlayAnimation( strImpact );
+			AInputLatency::Action( rPlayer.swingSample, "whack", "mallet-swing" );
 			rPlayer.eMalletState = MALLETSTATE_IMPACT;
 			break;
 		case MALLETSTATE_IMPACT:
@@ -2247,8 +2189,8 @@ void AWhackARaccMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 
 	if ( ARootTask::GetSingleton()->IsPaused() )
 	{
-		GetCurrentPlayer().iRow = 1;
-		GetCurrentPlayer().iCol = 1;
+		GetCurrentPlayer().rowKeys = GetCurrentPlayer().columnKeys = {};
+		WhackInput::SelectMouseHole( GetCurrentPlayer(), 4, NUM_ROWS );
 		return;
 	}
 
@@ -2295,37 +2237,7 @@ void AWhackARaccMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 
 	AGUI2::GetSingleton()->SetCursorVisible( TTRUE );
 
-	if ( m_bMouseControl )
-	{
-		// Move the ring to the hole under the mouse
-		TVector4 vRayPos;
-		TVector4 vRayDir;
-		ARenderer::GetSingleton()->GetScreenRay( ACameraManager::GetSingleton()->GetCurrentCamera(), AGUI2::GetMouseCursor().GetCursorPos(), vRayPos, vRayDir );
-
-		TVector4 vRayEnd;
-		vRayEnd.Multiply( vRayDir, 100.0f );
-		vRayEnd.Add( vRayPos, vRayEnd );
-
-		TINT   iClosestHole = -1;
-		TFLOAT fClosestDist = MAX_PICK_DIST;
-
-		for ( TINT i = 0; i < NUM_HOLES; i++ )
-		{
-			TFLOAT fDist = DistancePointToLineSq( m_aHoles[ i ].vPos, vRayPos, vRayEnd );
-
-			if ( fDist < fClosestDist )
-			{
-				fClosestDist = fDist;
-				iClosestHole = i;
-			}
-		}
-
-		if ( iClosestHole != -1 )
-		{
-			GetCurrentPlayer().iCol = iClosestHole % NUM_ROWS;
-			GetCurrentPlayer().iRow = iClosestHole / NUM_ROWS;
-		}
-	}
+	if ( m_bMouseControl ) UpdateMouseTarget();
 
 	if ( m_iLoopCue == -1 )
 		m_iLoopCue = ASoundManager::GetSingleton()->PlayCue( SOUND_LOOP );
@@ -2391,6 +2303,28 @@ void AWhackARaccMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 	UpdateDials( a_fDeltaTime );
 	UpdateMallet( a_fDeltaTime );
 	UpdateForms( a_fDeltaTime );
+}
+
+void AWhackARaccMiniGameState::UpdateMouseTarget()
+{
+	TVector4 rayPosition, rayDirection, rayEnd;
+	ARenderer::GetSingleton()->GetScreenRay( ACameraManager::GetSingleton()->GetCurrentCamera(),
+	    AGUI2::GetMouseCursor().GetCursorPos(), rayPosition, rayDirection );
+	rayEnd.Multiply( rayDirection, 100.0f );
+	rayEnd.Add( rayPosition, rayEnd );
+
+	TINT closestHole = -1;
+	TFLOAT closestDistance = MAX_PICK_DIST;
+	for ( TINT i = 0; i < NUM_HOLES; ++i )
+	{
+		const TFLOAT distance = DistancePointToLineSq( m_aHoles[i].vPos, rayPosition, rayEnd );
+		if ( distance < closestDistance )
+		{
+			closestDistance = distance;
+			closestHole = i;
+		}
+	}
+	WhackInput::SelectMouseHole( GetCurrentPlayer(), closestHole, NUM_ROWS );
 }
 
 // $Barnyard: FUNCTION 004ddc00

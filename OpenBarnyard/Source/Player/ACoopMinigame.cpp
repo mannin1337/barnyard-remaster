@@ -42,7 +42,8 @@ using namespace CoopMini;
 constexpr U32 MAGIC = 0x384d5942; // BYM8
 constexpr U32 VERSION = 1;
 constexpr U32 VIEW_MAGIC = 0x38565942; // BYV8
-constexpr U32 FEATURES = Spectator | ExpandedGames | MudRealtime | DartsPvp | AllMinigames | PoolPvp | GolfGroundView | DartsViewAim;
+constexpr U32 FEATURES = Spectator | ExpandedGames | MudRealtime | DartsPvp | AllMinigames | PoolPvp |
+    GolfGroundView | DartsViewAim | MudViewInput | PoolShotIntent | DartsTimedAim | FastViews | DartsBlendedAim;
 enum Kind : U32 { Hello, Snapshot, Request };
 struct Packet
 {
@@ -56,7 +57,11 @@ static_assert(sizeof(State) == 52 && sizeof(Command) == 24 && sizeof(Packet) == 
 static_assert(sizeof(MudInputPacket) == 36 && sizeof(MudInputPacket) < ACoopNet::MAX_DATA_SIZE);
 static_assert(sizeof(DartsInputPacket) == 28 && sizeof(DartsInputPacket) < ACoopNet::MAX_DATA_SIZE);
 static_assert(sizeof(DartsViewInputPacket) == 32 && sizeof(DartsViewInputPacket) < ACoopNet::MAX_DATA_SIZE);
+static_assert(sizeof(DartsTimedInputPacket) == 36 && sizeof(DartsTimedInputPacket) < ACoopNet::MAX_DATA_SIZE);
+static_assert(sizeof(DartsBlendedInputPacket) == 40 && sizeof(DartsBlendedInputPacket) < ACoopNet::MAX_DATA_SIZE);
 static_assert(sizeof(PoolInputPacket) == 44 && sizeof(PoolInputPacket) < ACoopNet::MAX_DATA_SIZE);
+static_assert(sizeof(PoolShotInputPacket) == 56 && sizeof(PoolShotInputPacket) < ACoopNet::MAX_DATA_SIZE);
+static_assert(sizeof(PoolPlaceInputPacket) == 52 && sizeof(PoolPlaceInputPacket) < ACoopNet::MAX_DATA_SIZE);
 
 struct ViewPacket
 {
@@ -81,11 +86,14 @@ TFLOAT s_mudInputWait;
 DartsTurn s_dartsTurn;
 DartsInputBuffer s_incomingDartsInput;
 DartsInputPacket s_outgoingDartsInput;
-U32 s_outgoingDartsView;
+U32 s_outgoingDartsView, s_outgoingDartsTime, s_outgoingDartsPrevious, s_outgoingDartsBlend;
 TFLOAT s_dartsInputWait;
 PoolTurn s_poolTurn;
 PoolInputBuffer s_incomingPoolInput;
 PoolInputPacket s_outgoingPoolInput;
+PoolShot s_outgoingPoolShot;
+PoolPlacement s_outgoingPoolPlace;
+TBOOL s_outgoingHasPlacement;
 TFLOAT s_poolInputWait;
 TBOOL s_poolInputSuspended;
 
@@ -94,6 +102,8 @@ void ResetPoolInput()
     s_poolTurn = PoolTurn{};
     s_incomingPoolInput = PoolInputBuffer{};
     s_outgoingPoolInput = PoolInputPacket{};
+    s_outgoingPoolShot = {};
+    s_outgoingHasPlacement = TFALSE;
     s_poolInputWait = 0.0f;
     s_poolInputSuspended = TFALSE;
 }
@@ -104,6 +114,8 @@ void ResetDartsInput()
     s_incomingDartsInput = DartsInputBuffer{};
     s_outgoingDartsInput = DartsInputPacket{};
     s_outgoingDartsView = 0;
+    s_outgoingDartsTime = 0;
+    s_outgoingDartsPrevious = s_outgoingDartsBlend = 0;
     s_dartsInputWait = 0.0f;
 }
 
@@ -118,12 +130,14 @@ State s_state;
 Command s_pending;
 AMiniGameState* s_game = TNULL;
 U32 s_localNonce, s_peerNonce, s_sequence, s_lastRemoteCommand;
+U32 s_boundPlayer = ~0u;
+bool s_retiringPeer = false;
 U32 s_lastRequest, s_requestSequence, s_requestedGame;
-U32 s_loadedMatch, s_readyMatch, s_playedTurn = ~0u;
+NativeMatch s_nativeMatch;
 DWORD s_lastPeer, s_phaseSince, s_idleSince;
 TFLOAT s_sendWait, s_devWait, s_devResultWait, s_devRoundWait;
 TINT s_score;
-TBOOL s_returnStarted, s_wasConnected, s_devInvited;
+TBOOL s_wasConnected, s_devInvited;
 const TCHAR* s_names[] = { "", "AChickenFireMinigameState", "AWhackARaccMiniGameState", "AGolfMiniGameState",
     "AGateCrashMiniGameState", "ADartMiniGame", "AStatuesMiniGameState", "ATeaseMrsBeadyGame",
     "AChasingChicksMiniGame", "AVeggiePatchDefenderGame", "ABikeRaceMicroGame", "ACarChaseMiniGameState",
@@ -236,10 +250,12 @@ void LogState(const TCHAR* why)
         why, s_state.match, s_state.revision, s_state.phase, s_state.game, s_state.turn,
         s_state.player, s_state.scores[0], s_state.scores[1], s_state.finished, s_state.ready, s_state.farm);
 }
+void SendCurrentState();
 void Changed(U32 oldPhase)
 {
     if (oldPhase != s_state.phase) s_phaseSince = GetTickCount();
     s_sendWait = 0.0f;
+    if (IsHost()) SendCurrentState();
     LogState("state");
     if (s_state.phase == Playing)
     {
@@ -250,6 +266,9 @@ void Changed(U32 oldPhase)
 }
 void LocalCommand(U32 action, TINT score = 0, TBOOL final = TFALSE)
 {
+    if (!IsHost() && s_pending.action == action && s_pending.match == s_state.match &&
+        s_pending.turn == s_state.turn && s_pending.score == score && s_pending.final == U32(final != TFALSE))
+        return; // The periodic sender already retries this exact command.
     Command c;
     c.action = action;
     c.match = s_state.match;
@@ -266,6 +285,7 @@ void LocalCommand(U32 action, TINT score = 0, TBOOL final = TFALSE)
     {
         s_pending = c; // repeated until a newer authoritative snapshot acknowledges it
         s_sendWait = 0.0f;
+        SendCurrentState();
     }
 }
 void Cancel(const TCHAR* why)
@@ -472,19 +492,21 @@ void Receive(const void* data, TINT size)
     U32 magic = 0;
     if (size < TINT(sizeof(magic))) return;
     std::memcpy(&magic, data, sizeof(magic));
+    if (magic != MAGIC && (s_retiringPeer || s_boundPlayer != LocalPlayer())) return;
     if (magic == VIEW_MAGIC) { ReceiveView(data, TUINT(size)); return; }
     if (magic == POOL_INPUT_MAGIC)
     {
         if (!ACoopMinigame::IsRealtimePoolHost() || !s_game) return;
         AcceptPoolInput(s_state, LocalPlayer(), s_poolTurn, data, TUINT(size),
-            s_peerNonce, s_localNonce, GetTickCount(), s_incomingPoolInput);
+            s_peerNonce, s_localNonce, GetTickCount(), s_incomingPoolInput, ACoopMinigame::SupportsPoolShotIntent());
         return;
     }
     if (magic == DARTS_INPUT_MAGIC)
     {
         if (!ACoopMinigame::IsRealtimeDartsHost() || !s_game) return;
         if (AcceptDartsInput(s_state, LocalPlayer(), s_dartsTurn, data, TUINT(size),
-            s_peerNonce, s_localNonce, GetTickCount(), s_incomingDartsInput, ACoopMinigame::SupportsDartsViewAim()))
+            s_peerNonce, s_localNonce, GetTickCount(), s_incomingDartsInput,
+            ACoopMinigame::SupportsDartsViewAim(), ACoopMinigame::SupportsDartsTimedAim(), ACoopMinigame::SupportsDartsBlendedAim()))
             TINFO("[coopmini] darts input rx match=%u serial=%u stage=%u sequence=%u\n", s_state.match,
                 s_incomingDartsInput.packet.throwSerial, s_incomingDartsInput.packet.stage, s_incomingDartsInput.packet.sequence);
         return;
@@ -509,12 +531,46 @@ void Receive(const void* data, TINT size)
     if (p.kind == Hello)
     {
         if (p.receiver && p.receiver != s_localNonce) return;
-        if (!s_peerNonce || (s_state.phase == Idle && GetTickCount() - s_lastPeer > 8000))
+        const DWORD now = GetTickCount();
+        const bool roleChanged = s_peerNonce && s_boundPlayer != LocalPlayer();
+        const bool different = s_peerNonce && (roleChanged || s_peerNonce != p.sender);
+        if (different && (roleChanged || now - s_lastPeer > 8000))
         {
-            // A replacement host starts its own match numbering. Only rebind while
-            // idle; an active match always keeps the original partner incarnation.
-            if (s_peerNonce && s_peerNonce != p.sender && !IsHost()) s_state = State{};
+            if (s_state.phase != Idle)
+            {
+                if (roleChanged && !s_retiringPeer)
+                {
+                    s_retiringPeer = true;
+                    s_pending = {};
+                    s_state.phase = Leaving;
+                    s_state.farm = 0;
+                    s_idleSince = 0;
+                    s_phaseSince = now;
+                }
+                return;
+            }
+            if (!s_nativeMatch.ReplacePeer(s_state,IsHost(),s_game || ARootTask::GetSingleton()->IsTransitioning()))
+            {
+                s_retiringPeer = true;
+                s_pending = {};
+                s_idleSince = 0;
+                s_phaseSince = now;
+                return;
+            }
+            s_retiringPeer = false;
+            s_pending = {};
+            s_requestedGame = s_requestSequence = s_sequence = 0;
+            s_viewSequence = s_sentView = 0;
+            s_score = 0;
+            s_viewWait = s_sendWait = s_devResultWait = s_devRoundWait = 0;
+            s_idleSince = s_shotAt = 0;
+        }
+        else if (different || (s_retiringPeer && s_state.phase != Idle)) return;
+        else s_retiringPeer = false; // Original partner reappeared after the return completed.
+        if (!s_peerNonce || different)
+        {
             s_peerNonce = p.sender;
+            s_boundPlayer = LocalPlayer();
             s_lastRemoteCommand = 0;
             s_lastRequest = 0;
             s_incomingView.size = s_outgoingView.size = 0;
@@ -532,7 +588,7 @@ void Receive(const void* data, TINT size)
         }
         return;
     }
-    if (!Bound(p.sender, p.receiver, s_peerNonce, s_localNonce)) return;
+    if (s_retiringPeer || s_boundPlayer != LocalPlayer() || !Bound(p.sender, p.receiver, s_peerNonce, s_localNonce)) return;
     s_lastPeer = GetTickCount();
     if (IsHost() && p.kind == Request)
     {
@@ -558,6 +614,12 @@ void Receive(const void* data, TINT size)
     {
         const U32 old = s_state.phase;
         const U32 oldTurn = s_state.turn;
+        if (p.state.phase == Idle && s_nativeMatch.loaded && s_nativeMatch.loaded == p.state.match &&
+            (s_game || ARootTask::GetSingleton()->IsTransitioning()))
+        {
+            if (old != Leaving) { s_state.phase = Leaving; s_phaseSince = GetTickCount(); }
+            return; // The host is home already. Finish the local return before accepting Idle.
+        }
         if (p.state.match != s_state.match || p.state.phase == Offer) s_requestedGame = 0;
         s_state = p.state;
         // Never replace a critical command with a live score before acknowledgement.
@@ -570,14 +632,9 @@ void Receive(const void* data, TINT size)
     }
 }
 
-void Send()
+void SendCurrentState()
 {
-    Packet hello;
-    hello.sender = s_localNonce;
-    hello.receiver = s_peerNonce;
-    hello.command.sequence = FEATURES;
-    ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &hello, sizeof(hello));
-    if (!s_peerNonce) return;
+    if (s_retiringPeer || s_boundPlayer != LocalPlayer() || !s_peerNonce || !s_localNonce || !ACoopNet::IsConnected()) return;
     Packet p;
     p.sender = s_localNonce;
     p.receiver = s_peerNonce;
@@ -595,21 +652,30 @@ void Send()
     }
     ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &p, sizeof(p));
 }
+void Send()
+{
+    Packet hello;
+    hello.sender = s_localNonce;
+    hello.receiver = s_peerNonce;
+    hello.command.sequence = FEATURES;
+    ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &hello, sizeof(hello));
+    SendCurrentState();
+}
 
 void SendView(DWORD now)
 {
-    // Each producer captures at 30 Hz. A second network timer here can drop
-    // a prepared pose and add another frame of latency as the timers drift.
+    // Send each completed pose once. A later network tick retries a socket
+    // send that could not be queued.
     if (!s_outgoingView.size || !(s_peerFeatures & Spectator) ||
         !ACoopNet::IsConnected() || !s_game ||
         (ACoopMinigame::BlockInput() && !(IsHost() && HostGame(s_state.game)))) return;
     auto& out = s_outgoingView.packet;
     if (out.stamp.sequence == s_sentView || now - s_outgoingView.tick > 500 ||
         !CanWatchView(s_state, 1u - LocalPlayer(), out.stamp)) return;
-    s_sentView = out.stamp.sequence;
     out.sender = s_localNonce;
     out.receiver = s_peerNonce;
-    ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &out, TINT(VIEW_HEADER_SIZE + s_outgoingView.size));
+    if (ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &out, TINT(VIEW_HEADER_SIZE + s_outgoingView.size)))
+        s_sentView = out.stamp.sequence;
 }
 
 void SendMudInput(TFLOAT dt)
@@ -641,7 +707,17 @@ void SendDartsInput(TFLOAT dt)
     input.match = s_state.match;
     // Repeat this edge until native aim state advances; only a human click
     // increments sequence. Duplicated heartbeats cannot become new clicks.
-    if (s_outgoingDartsView && ACoopMinigame::SupportsDartsViewAim())
+    if (s_outgoingDartsPrevious && ACoopMinigame::SupportsDartsBlendedAim())
+    {
+        const DartsBlendedInputPacket click{input, s_outgoingDartsView, s_outgoingDartsPrevious, s_outgoingDartsBlend};
+        ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &click, sizeof(click));
+    }
+    else if (s_outgoingDartsTime && s_outgoingDartsView && ACoopMinigame::SupportsDartsTimedAim())
+    {
+        const DartsTimedInputPacket timed{input, s_outgoingDartsView, s_outgoingDartsTime};
+        ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &timed, sizeof(timed));
+    }
+    else if (s_outgoingDartsView && ACoopMinigame::SupportsDartsViewAim())
     {
         const DartsViewInputPacket view{input, s_outgoingDartsView};
         ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &view, sizeof(view));
@@ -659,14 +735,24 @@ void SendPoolInput(TFLOAT dt)
     input.receiver = s_peerNonce;
     input.match = s_state.match;
     if (++input.sequence == 0) ++input.sequence;
-    ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &input, sizeof(input));
+    if (ACoopMinigame::SupportsPoolShotIntent() && ValidPoolShot(s_outgoingPoolShot))
+    {
+        const PoolShotInputPacket release{input, s_outgoingPoolShot};
+        ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &release, sizeof(release));
+    }
+    else if (ACoopMinigame::SupportsPoolShotIntent() && s_outgoingHasPlacement)
+    {
+        const PoolPlaceInputPacket release{input, s_outgoingPoolPlace};
+        ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &release, sizeof(release));
+    }
+    else ACoopNet::SendData(ACoopNet::CHANNEL_MINIGAME, &input, sizeof(input));
 }
 
 void RefreshHudText(DWORD now)
 {
     // SetText invalidates line layout. Only reformat when something shown has
     // changed, including a language switch or the other player's view going stale.
-    static std::array<U32, 6> previous{};
+    static std::array<U32, 8> previous{};
     static std::wstring previousNames[2];
     static DWORD lastNameCheck = 0;
     if (s_state.phase == Idle || s_state.phase == Results)
@@ -676,6 +762,9 @@ void RefreshHudText(DWORD now)
         return;
     }
     const U32 local = LocalPlayer();
+    const TINT scores[] = {DisplayedScore(s_state, s_pending, local, 0), DisplayedScore(s_state, s_pending, local, 1)};
+    const U32 finished = s_state.finished | (HasLocalScore(s_state, s_pending, local) &&
+        s_pending.action == RoundDone && s_pending.final ? 1u << local : 0u);
     const TBOOL blocked = s_state.phase == Playing && ACoopMinigame::BlockInput();
     const TBOOL watching = s_state.phase == Playing && s_state.player != local &&
         s_incomingView.size && CanWatchView(s_state, local, s_incomingView.packet.stamp) &&
@@ -686,8 +775,8 @@ void RefreshHudText(DWORD now)
 #else
     const U32 language = locale ? U32(locale->GetLanguage()) : ~0u;
 #endif
-    const std::array<U32, 6> current = { s_state.match, s_state.revision, s_state.phase,
-        local, language, U32(blocked != 0) | (U32(watching != 0) << 1) };
+    const std::array<U32, 8> current = { s_state.match, s_state.revision, s_state.phase,
+        local, language, U32(blocked != 0) | (U32(watching != 0) << 1), U32(scores[local]), finished };
     if (previous == current && now - lastNameCheck < 500) return;
     lastNameCheck = now;
     const auto* host = ACoopPartner::GetPlayerName(0);
@@ -707,19 +796,19 @@ void RefreshHudText(DWORD now)
     else if (s_state.phase == Playing && LowerScoreWins(s_state.game))
     {
         TWCHAR hostTime[64], guestTime[64];
-        FormatRaceTime(hostTime, TARRAYSIZE(hostTime), s_state.scores[0], (s_state.finished & 1) != 0);
-        FormatRaceTime(guestTime, TARRAYSIZE(guestTime), s_state.scores[1], (s_state.finished & 2) != 0);
+        FormatRaceTime(hostTime, TARRAYSIZE(hostTime), scores[0], (finished & 1) != 0);
+        FormatRaceTime(guestTime, TARRAYSIZE(guestTime), scores[1], (finished & 2) != 0);
         AModStrings::Format(s_hudText, TARRAYSIZE(s_hudText), AModStrings::Get(MODSTRING_COOPMINI_TIME_PLAYING),
             CoopMiniHud::Title, hostTime, guestTime,
             AModStrings::Get(blocked ? MODSTRING_COOPMINI_DUEL_WAITING : MODSTRING_COOPMINI_DUEL_RUNNING));
     }
     else if (s_state.phase == Playing && DuelGame(s_state.game)) AModStrings::Format(s_hudText, TARRAYSIZE(s_hudText),
-        AModStrings::Get(MODSTRING_COOPMINI_DUEL_PLAYING), CoopMiniHud::Title, s_state.scores[0], s_state.scores[1],
+        AModStrings::Get(MODSTRING_COOPMINI_DUEL_PLAYING), CoopMiniHud::Title, scores[0], scores[1],
         AModStrings::Get(blocked ? MODSTRING_COOPMINI_DUEL_WAITING : MODSTRING_COOPMINI_DUEL_RUNNING));
     else if (s_state.phase == Playing) AModStrings::Format(s_hudText, TARRAYSIZE(s_hudText),
         AModStrings::Get(s_state.game == Darts ? MODSTRING_COOPMINI_DARTS_PLAYING :
             s_state.game == Pool ? MODSTRING_COOPMINI_POOL_PLAYING : MODSTRING_COOPMINI_PLAYING),
-        CoopMiniHud::Title, s_state.scores[0], s_state.scores[1], s_state.turn + 1,
+        CoopMiniHud::Title, scores[0], scores[1], s_state.turn + 1,
         AModStrings::Get(s_state.player == LocalPlayer() ? MODSTRING_COOPMINI_YOUR_TURN :
             (watching ? MODSTRING_COOPMINI_WATCHING : MODSTRING_COOPMINI_PARTNER_TURN)));
     if (s_state.phase == Leaving) TStringManager::String16CopySafe(s_hudText, AModStrings::Get(MODSTRING_COOPMINI_LEAVING), TARRAYSIZE(s_hudText));
@@ -784,7 +873,7 @@ void Update(TFLOAT dt)
 #ifdef BARNYARD_COMMUNITY_PATCH
     if (s_popup && !s_popup->m_results && Switch("-coopminiaccept") && s_popup->GetMenuState() == ABYardMenuState::MENUSTATE_MENU_VISIBLE) s_popup->Dev_ChooseButton(0);
 #endif
-    if (s_state.phase == Loading && s_loadedMatch != s_state.match && SafeFarm())
+    if (s_nativeMatch.NeedsLoad(s_state) && SafeFarm())
     {
         auto* manager = AMiniGameManager::GetSingleton();
         const TINT game = manager->FindMiniGame(TPString8(s_names[s_state.game]));
@@ -795,10 +884,10 @@ void Update(TFLOAT dt)
         manager->MakeValidMiniGamePlayerSet(game);
         players->FinishUpAddingAIs();
         manager->SetMiniGameVariant(0);
-        s_loadedMatch = s_state.match;
-        s_readyMatch = 0;
-        s_playedTurn = ~0u;
-        s_returnStarted = TFALSE;
+        s_nativeMatch.loaded = s_state.match;
+        s_nativeMatch.ready = 0;
+        s_nativeMatch.playedTurn = ~0u;
+        s_nativeMatch.returnStarted = TFALSE;
         s_score = 0;
         ResetMudInput();
         ResetDartsInput();
@@ -846,14 +935,14 @@ void Update(TFLOAT dt)
     if (s_state.phase == Leaving)
     {
         if (s_popup && AGameStateController::GetSingleton()->GetCurrentState() == s_popup) s_popup->Remove();
-        if (!s_returnStarted && s_loadedMatch == s_state.match && AGameLoader::IsInMiniGame() && !ARootTask::GetSingleton()->IsTransitioning())
+        if (!s_nativeMatch.returnStarted && s_nativeMatch.loaded == s_state.match && AGameLoader::IsInMiniGame() && !ARootTask::GetSingleton()->IsTransitioning())
         {
-            s_returnStarted = TTRUE;
+            s_nativeMatch.returnStarted = TTRUE;
             // Restore the farm or barn from which this player joined.
             TINFO("[coopmini] returning to saved farm, match=%u\n", s_state.match);
             AGameLoader::LeaveMiniGame(TTRUE);
         }
-        const TBOOL loadedHere = s_loadedMatch == s_state.match;
+        const TBOOL loadedHere = s_nativeMatch.loaded == s_state.match;
         if ((!loadedHere || StoryWorldRestored()) && !(s_state.farm & (1u << LocalPlayer())))
         {
             LocalCommand(Farm);
@@ -869,9 +958,9 @@ void Update(TFLOAT dt)
                 else TINFO("[coopmini] cancelled before local load, match=%u\n", s_state.match);
             }
         }
-        if (s_idleSince && now - s_idleSince > 5000 && (s_state.farm == 3 || !connected || now - s_lastPeer > 8000))
+        if (s_idleSince && now - s_idleSince > 5000 && (s_retiringPeer || s_state.farm == 3 || !connected || now - s_lastPeer > 8000))
         {
-            if (IsHost() || !connected || now - s_lastPeer > 8000)
+            if (s_retiringPeer || IsHost() || !connected || now - s_lastPeer > 8000)
             {
                 s_state.phase = Idle;
                 ++s_state.revision;
@@ -883,7 +972,7 @@ void Update(TFLOAT dt)
     {
         s_idleSince = 0;
         s_pending = Command{};
-        s_returnStarted = TFALSE;
+        if (!s_game && (s_state.farm & (1u << LocalPlayer()))) s_nativeMatch = {};
         s_devResultWait = 0;
         s_devRoundWait = 0;
     }
@@ -908,12 +997,13 @@ struct Registration
 
 TBOOL ACoopMinigame::CanInvite()
 {
-    return s_state.phase == CoopMini::Idle && ACoopNet::IsConnected() && s_peerNonce &&
+    return s_state.phase == CoopMini::Idle && !s_retiringPeer && s_boundPlayer == LocalPlayer() &&
+        ACoopNet::IsConnected() && s_peerNonce &&
         AGameLoader::IsStoryMode() && AGameLoader::IsMainGameLoaded() && !AGameLoader::IsInMiniGame();
 }
 TBOOL ACoopMinigame::IsPlaying()
 {
-    return s_state.phase >= CoopMini::Loading && s_loadedMatch == s_state.match;
+    return s_state.phase >= CoopMini::Loading && s_nativeMatch.loaded == s_state.match;
 }
 void ACoopMinigame::OpenMenu() { AGameStateController::GetSingleton()->PushState(new MiniMenu()); }
 void ACoopMinigame::RequestInvite(TINT game)
@@ -942,9 +1032,9 @@ void ACoopMinigame::OnRemoved(AMiniGameState* state)
 TBOOL ACoopMinigame::CanUpdate(AMiniGameState* state)
 {
     if (!IsPlaying() || s_game != state) return TTRUE;
-    if (s_state.phase == CoopMini::Loading && s_readyMatch != s_state.match)
+    if (s_state.phase == CoopMini::Loading && s_nativeMatch.ready != s_state.match)
     {
-        s_readyMatch = s_state.match;
+        s_nativeMatch.ready = s_state.match;
         LocalCommand(CoopMini::Ready);
         TINFO("[coopmini] local native game ready player=%u match=%u\n", LocalPlayer(), s_state.match);
         if (IsRealtimeMud(state)) TINFO("[coopmini] realtime mud ready local-slot=%u authority=%s match=%u\n",
@@ -956,10 +1046,10 @@ TBOOL ACoopMinigame::CanUpdate(AMiniGameState* state)
         if (s_state.phase != CoopMini::Playing || !IsHost()) return TFALSE;
     }
     else if (BlockInput()) return TFALSE;
-    if (s_playedTurn != s_state.turn)
+    if (s_nativeMatch.playedTurn != s_state.turn)
     {
-        const TBOOL firstTurn = s_playedTurn == ~0u;
-        s_playedTurn = s_state.turn;
+        const TBOOL firstTurn = s_nativeMatch.playedTurn == ~0u;
+        s_nativeMatch.playedTurn = s_state.turn;
         // Golf owns its flyover/tee preparation and does not use the base countdown.
         if (s_state.game != CoopMini::Golf && (!hostGame || firstTurn)) state->CoopStartTurn();
         TINFO("[coopmini] local turn begins player=%u turn=%u\n", LocalPlayer(), s_state.turn);
@@ -996,6 +1086,10 @@ TBOOL ACoopMinigame::PlayerNamesChanged(TUINT& revision)
 }
 TBOOL ACoopMinigame::SupportsGolfGroundView() { return (s_peerFeatures & CoopMini::GolfGroundView) != 0; }
 TBOOL ACoopMinigame::SupportsDartsViewAim() { return (s_peerFeatures & CoopMini::DartsViewAim) != 0; }
+TBOOL ACoopMinigame::SupportsDartsTimedAim() { return SupportsDartsViewAim() && (s_peerFeatures & CoopMini::DartsTimedAim) != 0; }
+TBOOL ACoopMinigame::SupportsDartsBlendedAim() { return SupportsDartsViewAim() && (s_peerFeatures & CoopMini::DartsBlendedAim) != 0; }
+TBOOL ACoopMinigame::SupportsMudViewInput() { return (s_peerFeatures & CoopMini::MudViewInput) != 0; }
+TBOOL ACoopMinigame::SupportsPoolShotIntent() { return (s_peerFeatures & CoopMini::PoolShotIntent) != 0; }
 TBOOL ACoopMinigame::IsViewLogEnabled()
 {
     static const TBOOL enabled = Switch("-netlog") || Switch("-cooplog");
@@ -1012,7 +1106,7 @@ void ACoopMinigame::SubmitMudInput(TBOOL held, TBOOL jump, TBOOL kick, TBOOL dir
 {
     if (!IsRealtimeMud() || IsHost() || BlockInput()) return;
     const U32 jumpHeld = held ? 1u : 0u;
-    if (jump || kick || s_outgoingMudInput.jumpHeld != jumpHeld) s_mudInputWait = 0.0f;
+    const TBOOL changed = jump || kick || s_outgoingMudInput.jumpHeld != jumpHeld;
     s_outgoingMudInput.jumpHeld = jumpHeld;
     if (jump) ++s_outgoingMudInput.jumpPresses;
     if (kick)
@@ -1020,6 +1114,16 @@ void ACoopMinigame::SubmitMudInput(TBOOL held, TBOOL jump, TBOOL kick, TBOOL dir
         ++s_outgoingMudInput.kickPresses;
         s_outgoingMudInput.kickMode = directional ? (left ? 1u : 2u) : 0u;
     }
+    if (changed)
+    {
+        s_mudInputWait = 0.0f;
+        SendMudInput(0.0f);
+    }
+}
+void ACoopMinigame::GetMudPressCounters(TUINT& jump, TUINT& kick)
+{
+    jump = IsHost() ? s_incomingMudInput.consumedJump : s_outgoingMudInput.jumpPresses;
+    kick = IsHost() ? s_incomingMudInput.consumedKick : s_outgoingMudInput.kickPresses;
 }
 TBOOL ACoopMinigame::ConsumeMudInput(MudInput& input)
 {
@@ -1063,20 +1167,32 @@ TBOOL ACoopMinigame::IsRealtimeDarts(AMiniGameState* state)
 }
 TBOOL ACoopMinigame::IsRealtimeDartsHost() { return IsRealtimeDarts() && IsHost(); }
 TUINT ACoopMinigame::GetRealtimeDartsLocalPlayer() { return LocalPlayer(); }
-void ACoopMinigame::SubmitDartsInput(TUINT serial, TUINT stage, TUINT viewSequence)
+void ACoopMinigame::SubmitDartsInput(TUINT serial, TUINT stage, TUINT viewSequence, TUINT stageTimeMs,
+    TUINT previousView, TUINT blend)
 {
     if (!IsRealtimeDarts() || IsHost() || BlockInput() || !serial || stage < 1 || stage > 2) return;
+    if (stageTimeMs && (!SupportsDartsTimedAim() || !viewSequence || !ValidDartsStageTime(stage, stageTimeMs))) return;
+    if (previousView && (!SupportsDartsBlendedAim() || !ValidDartsBlend(stage, viewSequence, previousView, blend))) return;
     s_outgoingDartsInput.throwSerial = serial;
     s_outgoingDartsInput.stage = stage;
     s_outgoingDartsView = SupportsDartsViewAim() ? viewSequence : 0;
+    s_outgoingDartsTime = stageTimeMs;
+    s_outgoingDartsPrevious = previousView;
+    s_outgoingDartsBlend = blend;
     if (++s_outgoingDartsInput.sequence == 0) ++s_outgoingDartsInput.sequence;
     s_dartsInputWait = 0.0f;
+    SendDartsInput(0.0f);
 }
-TBOOL ACoopMinigame::ConsumeDartsInput(TUINT serial, TUINT stage, TUINT* viewSequence)
+TBOOL ACoopMinigame::ConsumeDartsInput(TUINT serial, TUINT stage, TUINT* viewSequence, TUINT* stageTimeMs,
+    TUINT* previousView, TUINT* blend)
 {
     if (viewSequence) *viewSequence = 0;
+    if (stageTimeMs) *stageTimeMs = 0;
+    if (previousView) *previousView = 0;
+    if (blend) *blend = 0;
     if (!IsRealtimeDartsHost() || serial != s_dartsTurn.serial || stage != s_dartsTurn.stage) return TFALSE;
-    return CoopMini::ConsumeDartsInput(s_state, s_dartsTurn, s_incomingDartsInput, GetTickCount(), viewSequence);
+    return CoopMini::ConsumeDartsInput(s_state, s_dartsTurn, s_incomingDartsInput, GetTickCount(),
+        viewSequence, stageTimeMs, previousView, blend);
 }
 void ACoopMinigame::DiscardDartsViewInput(TUINT serial, TUINT stage)
 {
@@ -1087,7 +1203,10 @@ void ACoopMinigame::SetDartsState(TUINT player, TUINT round, TUINT serial, TUINT
 {
     if (!IsRealtimeDartsHost()) return;
     if (CoopMini::SetDartsState(s_state, LocalPlayer(), s_dartsTurn, player, round, serial, stage, hostScore, guestScore))
+    {
         s_sendWait = 0.0f;
+        SendCurrentState();
+    }
 }
 void ACoopMinigame::CompleteDartsMatch(TINT hostScore, TINT guestScore)
 {
@@ -1106,13 +1225,46 @@ TBOOL ACoopMinigame::IsRealtimePool(AMiniGameState* state)
 }
 TBOOL ACoopMinigame::IsRealtimePoolHost() { return IsRealtimePool() && IsHost(); }
 TUINT ACoopMinigame::GetRealtimePoolLocalPlayer() { return LocalPlayer(); }
-void ACoopMinigame::SubmitPoolInput(TUINT serial, TFLOAT aimX, TFLOAT aimY, TBOOL pressed, TBOOL released)
+static void SubmitPoolControls(TUINT serial, TFLOAT aimX, TFLOAT aimY, TBOOL pressed, TBOOL released,
+    const PoolShot& shot, const PoolPlacement* placement)
 {
-    if (!IsRealtimePool() || IsHost() || BlockInput() || !serial ||
+    if (!ACoopMinigame::IsRealtimePool() || IsHost() || ACoopMinigame::BlockInput() || !serial ||
         !(aimX >= -1.0f && aimX <= 1.0f) || !(aimY >= -1.0f && aimY <= 1.0f)) return;
+    const TBOOL resumed = s_poolInputSuspended;
+    const TBOOL changedShot = s_outgoingPoolInput.shotSerial != serial;
+    const TBOOL wasAiming = s_outgoingPoolInput.aimX != 0.0f || s_outgoingPoolInput.aimY != 0.0f;
+    const TBOOL aiming = aimX != 0.0f || aimY != 0.0f;
+    if (changedShot || released || placement) s_outgoingPoolShot = {};
+    if (changedShot || released || !placement) s_outgoingHasPlacement = TFALSE;
+    if (released)
+    {
+        if (placement && ValidPoolPlacement(*placement))
+        {
+            s_outgoingPoolPlace = *placement;
+            s_outgoingHasPlacement = TTRUE;
+        }
+        else if (!placement) s_outgoingPoolShot = shot;
+    }
     CoopMini::UpdatePoolInput(s_outgoingPoolInput, serial, aimX, aimY, pressed != TFALSE, released != TFALSE);
-    if (pressed || released || s_poolInputSuspended) s_poolInputWait = 0.0f;
     s_poolInputSuspended = TFALSE;
+    // Begin/end of stick motion and button edges bypass the periodic refresh.
+    // A held analog stick keeps its normal bounded packet cadence.
+    if (pressed || released || resumed || wasAiming != aiming)
+    {
+        s_poolInputWait = 0.0f;
+        SendPoolInput(0.0f);
+    }
+}
+void ACoopMinigame::SubmitPoolInput(TUINT serial, TFLOAT aimX, TFLOAT aimY, TBOOL pressed, TBOOL released,
+    TFLOAT shotDirX, TFLOAT shotDirZ, TFLOAT shotPower)
+{
+    SubmitPoolControls(serial, aimX, aimY, pressed, released, {shotDirX, shotDirZ, shotPower}, TNULL);
+}
+void ACoopMinigame::SubmitPoolPlacement(TUINT serial, TFLOAT aimX, TFLOAT aimY, TBOOL pressed, TBOOL released,
+    TFLOAT offsetX, TFLOAT offsetZ)
+{
+    const PoolPlacement place{offsetX, offsetZ};
+    SubmitPoolControls(serial, aimX, aimY, pressed, released, {}, &place);
 }
 void ACoopMinigame::SuspendPoolInput()
 {
@@ -1121,6 +1273,8 @@ void ACoopMinigame::SuspendPoolInput()
     if (++s_outgoingPoolInput.inputEpoch == 0) ++s_outgoingPoolInput.inputEpoch;
     s_outgoingPoolInput.shootPresses = s_outgoingPoolInput.shootReleases = 0;
     s_outgoingPoolInput.aimX = s_outgoingPoolInput.aimY = 0.0f;
+    s_outgoingPoolShot = {};
+    s_outgoingHasPlacement = TFALSE;
 }
 TBOOL ACoopMinigame::ConsumePoolInput(TUINT serial, PoolInput& input)
 {
@@ -1132,13 +1286,23 @@ TBOOL ACoopMinigame::ConsumePoolInput(TUINT serial, PoolInput& input)
     input.aimY = controls.aimY;
     input.shootPressed = controls.shootPressed;
     input.shootReleased = controls.shootReleased;
+    input.hasShotIntent = controls.hasShotIntent;
+    input.shotDirX = controls.shot.dirX;
+    input.shotDirZ = controls.shot.dirZ;
+    input.shotPower = controls.shot.power;
+    input.hasPlacementIntent = controls.hasPlacementIntent;
+    input.placeX = controls.placement.x;
+    input.placeZ = controls.placement.z;
     return fresh;
 }
 void ACoopMinigame::SetPoolState(TUINT player, TUINT serial, TUINT stage, TINT hostPotted, TINT guestPotted)
 {
     if (!IsRealtimePoolHost()) return;
     if (CoopMini::SetPoolState(s_state, LocalPlayer(), s_poolTurn, player, serial, stage, hostPotted, guestPotted))
+    {
         s_sendWait = 0.0f;
+        SendCurrentState();
+    }
 }
 void ACoopMinigame::CompletePoolMatch(TUINT winner, TINT hostPotted, TINT guestPotted)
 {
@@ -1150,13 +1314,18 @@ void ACoopMinigame::CompletePoolMatch(TUINT winner, TINT hostPotted, TINT guestP
         TINFO("[coopmini] pool complete match=%u winner=%u potted=%d,%d\n", s_state.match, winner, hostPotted, guestPotted);
     }
 }
-TBOOL ACoopMinigame::ShouldCaptureSpectatorFrame(AMiniGameState* state, TFLOAT dt)
+TBOOL ACoopMinigame::ShouldCaptureSpectatorFrame(AMiniGameState* state, TFLOAT dt, TBOOL force)
 {
-    if (s_game != state || !IsPlaying() || BlockInput() || !(s_peerFeatures & Spectator)) return TFALSE;
+    if (s_game != state || !IsPlaying() || !(s_peerFeatures & Spectator)) return TFALSE;
+    if (HostGame(s_state.game))
+    {
+        if (!IsHost() || (s_state.phase != Playing && s_state.phase != Results)) return TFALSE;
+    }
+    else if (BlockInput()) return TFALSE;
     const auto& stamp = s_outgoingView.packet.stamp;
-    if (!s_outgoingView.size || stamp.match != s_state.match || stamp.turn != s_state.turn)
+    if (force || !s_outgoingView.size || stamp.match != s_state.match || stamp.turn != s_state.turn)
         s_viewWait = 0.0f;
-    return ViewSendDue(s_viewWait, dt);
+    return ViewSendDue(s_viewWait, dt, (s_peerFeatures & FastViews) ? 1.0f / 60.0f : 1.0f / 30.0f);
 }
 void ACoopMinigame::PublishSpectatorFrame(AMiniGameState* state, const void* frame, TUINT size, TUINT* sequence, TUINT* match)
 {
@@ -1170,6 +1339,7 @@ void ACoopMinigame::PublishSpectatorFrame(AMiniGameState* state, const void* fra
     std::memcpy(s_outgoingView.packet.data, frame, size);
     s_outgoingView.size = size;
     s_outgoingView.tick = GetTickCount();
+    SendView(s_outgoingView.tick);
     if (sequence) *sequence = s_viewSequence;
     if (match) *match = s_state.match;
 }
@@ -1192,6 +1362,7 @@ void ACoopMinigame::SetScore(TINT score)
     if (s_score == score) return;
     s_score = score;
     LocalCommand(CoopMini::Score, score);
+    RefreshHudText(GetTickCount());
 }
 void ACoopMinigame::CompleteRound(TINT score, TBOOL final)
 {
@@ -1200,6 +1371,7 @@ void ACoopMinigame::CompleteRound(TINT score, TBOOL final)
     TINFO("[coopmini] native round complete player=%u turn=%u score=%d final=%d\n", LocalPlayer(), s_state.turn, score, final);
     s_score = score;
     LocalCommand(CoopMini::RoundDone, score, final);
+    RefreshHudText(GetTickCount());
 }
 void ACoopMinigame::UpdateOffline(TFLOAT dt)
 {

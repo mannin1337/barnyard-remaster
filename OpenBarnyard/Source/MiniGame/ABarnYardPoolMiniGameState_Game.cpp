@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ABarnYardPoolMiniGameState.h"
+#include "APoolLocalShot.h"
 #include "Player/ACoopMinigame.h"
 #include "Player/ACoopPartner.h"
 #include "Helpers/APlayerProgress.h"
@@ -579,11 +580,12 @@ end:
 // $Barnyard: FUNCTION 004d6a60
 void ABarnYardPoolMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 {
-	if ( ACoopMinigame::IsRealtimePool(this) )
+	const TBOOL realtime = ACoopMinigame::IsRealtimePool(this);
+	if ( realtime )
 	{
 		if ( !ACoopMinigame::IsRealtimePoolHost() ) return;
 		PublishCoopState();
-		UpdateCoopInput();
+		UpdateCoopInput(a_fDeltaTime);
 	}
 	UpdateProps( a_fDeltaTime );
 	m_fInputDelay -= a_fDeltaTime;
@@ -598,7 +600,7 @@ void ABarnYardPoolMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 		return;
 	}
 
-	UpdateAimGuide( a_fDeltaTime );
+	if (!realtime) UpdateAimGuide( a_fDeltaTime );
 
 	if ( m_eState == STATE_START )
 		m_eState = STATE_BALL_IN_HAND;
@@ -821,11 +823,19 @@ void ABarnYardPoolMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 			ChooseShotView( m_vShotVelocity );
 			m_eState = STATE_CUE_STRIKE;
 			m_pAimTarget->SetVisible( TFALSE );
-			break;
+			if (!realtime) break;
+			[[fallthrough]];
 		case STATE_CUE_STRIKE:
-			m_pCue->UpdatePullBack( a_fDeltaTime * 300.0f, a_fDeltaTime );
+		{
+			auto advance = [&](TFLOAT dt)
+			{
+				m_pCue->UpdatePullBack(dt * 300.0f,dt);
+				return m_pCue->GetPower() <= -2.0f && m_pCue->m_fPullBackSpeed < 0.0f;
+			};
+			const TBOOL contact = realtime ? PoolLocal::AdvanceWindup(a_fDeltaTime,advance) : advance(a_fDeltaTime);
+			if (realtime) m_pCue->UpdateAimPose();
 
-			if ( m_pCue->GetPower() <= -2.0f && m_pCue->m_fPullBackSpeed < 0.0f )
+			if (contact)
 			{
 				// The cue hits the cue ball
 				m_eState = STATE_CUE_FOLLOW;
@@ -848,6 +858,7 @@ void ABarnYardPoolMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 				m_pCue->Shoot();
 			}
 			break;
+		}
 		case STATE_CUE_FOLLOW:
 			m_oPowerBar.SetBarVisible( TFALSE );
 			m_oPowerBar.SetValue( 0.0f, TTRUE );
@@ -933,5 +944,9 @@ void ABarnYardPoolMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 		m_aShadows[ i ]->GetUnit()->SetSteerPosition( vPosition );
 	}
 
-	UpdateAim( a_fDeltaTime );
+	if (realtime && (m_eState == STATE_HUMAN_AIM || m_eState == STATE_HUMAN_POWER))
+		UpdateCoopAim(a_fDeltaTime);
+	else
+		UpdateAim(a_fDeltaTime);
+	if (realtime) UpdateAimGuide(a_fDeltaTime);
 }

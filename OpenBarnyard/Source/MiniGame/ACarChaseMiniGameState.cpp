@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "Debug/AInputLatency.h"
 #include "Player/ACoopMinigame.h"
 #include <Render/TCameraObject.h> // before the Physics headers (Opcode #defines PI)
 #include "Physics/ACollisionObject.h"
@@ -64,6 +65,16 @@
 #include <Core/TMemoryDebugOn.h>
 
 TOSHI_NAMESPACE_USING
+
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
+// Separate a pre-start hold from the normal input-latency samples taken during play.
+static struct
+{
+	TUINT id;
+	TInputDevice* device;
+	TINT doodad;
+} s_preStartThrottle{};
+#endif
 
 TPSTRING8_DECLARE( ACarChaseMiniGameState );
 TPSTRING8_DECLARE( car_chase_car1 );
@@ -284,9 +295,28 @@ ACarChaseMiniGameState::~ACarChaseMiniGameState()
 // $Barnyard: FUNCTION 004ee9f0
 TBOOL ACarChaseMiniGameState::ProcessCommand( AInputCommand a_eInputCommand, const TInputInterface::InputEvent* a_pInputEvent, TBOOL& a_rStopEvents )
 {
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
+	const bool trackedKey = s_preStartThrottle.id && s_preStartThrottle.device == a_pInputEvent->GetSource() &&
+	                        s_preStartThrottle.doodad == a_pInputEvent->GetDoodad();
+	if ( trackedKey && a_pInputEvent->GetEventType() == TInputInterface::EVENT_TYPE_GONE_UP )
+		s_preStartThrottle = {};
+#endif
 	if ( ACoopMinigame::IsScoreDuel( this ) && ACoopMinigame::BlockInput() &&
 		a_eInputCommand != AInputCommand_Quit && a_eInputCommand != AInputCommand_Start )
+	{
+		// Preserve a held accelerator through the LAN ready barrier. The device
+		// stops repeating on release, and the car only receives input once play is allowed.
+		if ( !m_bStarted && a_eInputCommand == AInputCommand_ForwardWithUp &&
+		     a_pInputEvent->GetEventType() == TInputInterface::EVENT_TYPE_GONE_DOWN )
+		{
+			a_pInputEvent->StartRepeat( 0.0f, 0.0f );
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
+			if ( const TUINT sample = AInputLatency::Current() )
+				s_preStartThrottle = { sample, a_pInputEvent->GetSource(), a_pInputEvent->GetDoodad() };
+#endif
+		}
 		return TTRUE;
+	}
 	if ( FindChildState( &TGetClass( AAnticGameOverState ) ) && a_eInputCommand == AInputCommand_Quit )
 		return TTRUE;
 
@@ -395,10 +425,24 @@ TBOOL ACarChaseMiniGameState::ProcessCommand( AInputCommand a_eInputCommand, con
 	}
 
 	// Apply the inputs to the car
+	const TFLOAT previousThrottle = m_apSteers[ iSlot ]->GetCar()->m_fThrottle;
 	if ( pCar->m_iUnk160 != STEERCOMMAND_ANALOG )
 		DriveCar( m_apSteers[ iSlot ], pCar->m_iDriveState, pCar->m_iUnk160, pCar->m_fSteering, 90.0f, TTRUE );
 	else
 		DriveCar( m_apSteers[ iSlot ], pCar->m_iDriveState, pCar->m_iUnk15C, pCar->m_fSteering, 90.0f, TTRUE );
+
+	if ( m_bStarted && a_eInputCommand == AInputCommand_ForwardWithUp && m_apSteers[ iSlot ]->GetCar()->m_fThrottle != previousThrottle )
+	{
+		AInputLatency::Action( AInputLatency::Current(), "joyride", "throttle" );
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
+		if ( trackedKey && eEventType == TInputInterface::EVENT_TYPE_REPEAT )
+		{
+			TINFO( "[joyride-input] held-throttle-resumed id=%u doodad=%d throttle=%.3f\n",
+			       s_preStartThrottle.id, s_preStartThrottle.doodad, m_apSteers[ iSlot ]->GetCar()->m_fThrottle );
+			s_preStartThrottle = {};
+		}
+#endif
+	}
 
 	ACameraHelper* pCameraHelper = ACameraManager::GetSingleton()->GetCurrentCameraHelper();
 
@@ -1967,6 +2011,9 @@ void ACarChaseMiniGameState::OnInsertion()
 // $Barnyard: FUNCTION 004f0d20
 void ACarChaseMiniGameState::OnRemoval()
 {
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
+	s_preStartThrottle = {};
+#endif
 	// NOTE: inlined AGameState::RestoreCameraFOV, restores the FOV of the current camera
 	if ( ACameraManager::IsSingletonCreated() )
 	{

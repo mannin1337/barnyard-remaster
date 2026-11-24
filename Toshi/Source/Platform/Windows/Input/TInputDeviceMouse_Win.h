@@ -52,6 +52,7 @@ public:
 
 	// Called only by the game's window procedure; never receives background input.
 	void HandleRawInput( HWND a_hWindow, WPARAM a_wParam, LPARAM a_lParam );
+	void PumpRawInputForFrame();
 	void ResetRawMotion();
 
 #  ifndef TOSHI_FINAL

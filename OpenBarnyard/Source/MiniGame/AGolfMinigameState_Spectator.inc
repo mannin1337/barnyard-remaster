@@ -1,5 +1,6 @@
 // LAN golf presentation only. Included at the end of AGolfMinigameState.cpp.
 // No replica owns an AUnit, steer, collision object, or animation callback.
+#include "ASpectatorBlendClock.h"
 namespace GolfSpectator
 {
 static constexpr TUINT32 MAGIC = 0x31565047; // GPV1
@@ -255,24 +256,20 @@ struct Motion
 {
     Frame start{}, shown{};
     TUINT sequence = 0;
-    TFLOAT gap = 0.0f, elapsed = 0.0f, duration = 0.0f;
+    ASpectatorBlendClock timing;
 
     void Update(const Frame& next, TUINT serial, TFLOAT dt)
     {
-        gap += dt;
-        if (serial != sequence)
+        const TBOOL fresh = serial != sequence;
+        const TBOOL cut = !sequence || shown.index != next.index || shown.state != next.state;
+        if (fresh)
         {
-            const TBOOL cut = !sequence || shown.index != next.index || shown.state != next.state || gap >= 0.2f;
-            start = cut ? next : shown;
-            duration = cut ? 0.0f : TMath::Max(1.0f / 60.0f, TMath::Min(gap, 0.1f));
-            elapsed = 0.0f;
-            gap = 0.0f;
+            if (!cut) start = shown;
             sequence = serial;
         }
-        elapsed += dt;
+        const TFLOAT alpha = timing.Advance(dt, fresh, cut);
         shown = next;
-        if (elapsed >= duration) return;
-        const TFLOAT alpha = elapsed / duration;
+        if (alpha >= 1.0f) return;
         BlendTransform(shown.camera, start.camera, next.camera, alpha, TTRUE);
         shown.fov = start.fov + (next.fov - start.fov) * alpha;
         for (TINT i = 0; i < 4; ++i)
@@ -413,8 +410,8 @@ void AGolfMinigameState::CoopUpdateSpectator(TFLOAT deltaTime)
     ACameraManager::GetSingleton()->DetachCameraHelpers();
     ACamera* camera = ACameraManager::GetSingleton()->GetCurrentCamera();
     const TBOOL fresh = saved.motion.sequence != sequence;
-    const TBOOL blending = saved.motion.elapsed < saved.motion.duration;
-    const TVector4 lastCamera = saved.motion.shown.camera.GetTranslation();
+    const TBOOL blending = saved.motion.timing.IsBlending();
+    const TVector4 lastCamera = saved.motion.sequence ? saved.motion.shown.camera.GetTranslation() : frame.camera.GetTranslation();
     saved.motion.Update(frame, sequence, deltaTime);
     const GolfSpectator::Frame& shown = saved.motion.shown;
     if (camera) { camera->SetMatrix(shown.camera); camera->SetFOV(shown.fov); }
@@ -456,7 +453,7 @@ void AGolfMinigameState::CoopUpdateSpectator(TFLOAT deltaTime)
         TVector4::DistanceSq(lastCamera, shown.camera.GetTranslation()) > 0.0000001f)
     {
         saved.loggedSmooth = TTRUE;
-        TINFO("[coopgolfview] camera advanced between packets sequence=%u interval=%.1fms\n", sequence, saved.motion.duration*1000.0f);
+        TINFO("[coopgolfview] camera advanced between packets sequence=%u interval=%.1fms\n", sequence, saved.motion.timing.duration*1000.0f);
     }
     if (!saved.applied && camera)
     {

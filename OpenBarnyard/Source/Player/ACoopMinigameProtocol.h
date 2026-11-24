@@ -11,7 +11,8 @@ using U32 = std::uint32_t;
 enum Game : U32 { Chicken = 1, Whack, Golf, Mud, Darts, Mailman, Beady, Chicks, Veggie,
     Bike, JoyRide, CowTipping, Barntender, Pool, LastGame = Pool };
 enum Feature : U32 { Spectator = 1, ExpandedGames = 2, MudRealtime = 4, DartsPvp = 8, AllMinigames = 16, PoolPvp = 32,
-    GolfGroundView = 64, DartsViewAim = 128 };
+    GolfGroundView = 64, DartsViewAim = 128, MudViewInput = 256, PoolShotIntent = 512,
+    DartsTimedAim = 1024, FastViews = 2048, DartsBlendedAim = 4096 };
 enum Phase : U32 { Idle, Offer, Loading, Playing, Results, Leaving };
 enum Action : U32 { None, Invite, Accept, Reject, Ready, Score, RoundDone, Leave, Farm };
 struct State
@@ -24,6 +25,27 @@ struct Command
 {
     U32 action = None, match = 0, turn = 0, sequence = 0, final = 0;
     std::int32_t score = 0;
+};
+struct NativeMatch
+{
+    U32 loaded = 0, ready = 0, playedTurn = ~0u;
+    bool returnStarted = false;
+    bool NeedsLoad(const State& state) const { return state.phase == Loading && loaded != state.match; }
+    // Only replace an idle peer. A stale Idle snapshot can arrive while the old
+    // native level is still returning; finish that return under its original ID.
+    bool ReplacePeer(State& state, bool host, bool nativeBusy)
+    {
+        if (state.phase != Idle) return false;
+        if (loaded && loaded == state.match && nativeBusy)
+        {
+            state.phase = Leaving;
+            state.farm = 0;
+            return false;
+        }
+        if (!host) state = State{}; // A different host can start over at match 1.
+        *this = {};
+        return true;
+    }
 };
 struct ViewStamp
 {
@@ -64,6 +86,19 @@ inline bool NewerView(const ViewStamp& incoming, const ViewStamp& previous)
         incoming.game != previous.game || std::int32_t(incoming.sequence - previous.sequence) > 0;
 }
 inline bool ValidScore(std::int32_t score) { return score >= 0 && score <= 10000000; }
+// A guest already owns its native score in a local challenge. Show it while
+// the command travels to the host, without modifying the replicated state.
+inline bool HasLocalScore(const State& s, const Command& pending, U32 local)
+{
+    return local == 1 && s.phase == Playing && !HostGame(s.game) &&
+        (DuelGame(s.game) || s.player == local) && !(s.finished & (1u << local)) &&
+        pending.match == s.match && pending.turn == s.turn && ValidScore(pending.score) &&
+        (pending.action == Score || pending.action == RoundDone);
+}
+inline std::int32_t DisplayedScore(const State& s, const Command& pending, U32 local, U32 player)
+{
+    return player == local && HasLocalScore(s, pending, local) ? pending.score : s.scores[player];
+}
 inline bool Valid(const State& s)
 {
     return s.phase <= Leaving && ValidGame(s.game) && s.player < 2 &&
@@ -214,7 +249,8 @@ struct DartsInputBuffer
 {
     DartsInputPacket packet;
     U32 consumedSerial = 0, consumedStage = 0, consumedSequence = 0, tick = 0;
-    U32 viewSequence = 0;
+    U32 viewSequence = 0, stageTimeMs = 0;
+    U32 previousView = 0, blend = 0;
     bool received = false;
 };
 // Optional negotiated extension; the legacy click remains exactly 28 bytes.
@@ -223,6 +259,24 @@ struct DartsViewInputPacket
     DartsInputPacket input;
     U32 viewSequence = 0;
 };
+struct DartsTimedInputPacket
+{
+    DartsInputPacket input;
+    U32 viewSequence = 0, stageTimeMs = 0;
+};
+struct DartsBlendedInputPacket
+{
+    DartsInputPacket input;
+    U32 viewSequence = 0, previousView = 0, blend = 0;
+};
+inline bool ValidDartsBlend(U32 stage, U32 view, U32 previous, U32 blend)
+{
+    return stage == 1 && view && previous && std::int32_t(view - previous) > 0 && blend <= 65535;
+}
+inline bool ValidDartsStageTime(U32 stage, U32 timeMs)
+{
+    return stage == 2 && timeMs >= 100 && timeMs <= 60000;
+}
 // A bad view reference may be retried by a NEW click. Keep packet/sequence
 // counters so the rejected click's heartbeat cannot become another attempt.
 inline bool DiscardDartsViewInput(DartsInputBuffer& input, U32 serial, U32 stage)
@@ -238,12 +292,32 @@ inline bool DartsInputTurn(const State& s, const DartsTurn& current, const Darts
         p.stage >= 1 && p.stage <= 2 && p.stage == current.stage;
 }
 inline bool AcceptDartsInput(const State& s, U32 localPlayer, const DartsTurn& current,
-    const void* data, std::size_t size, U32 remote, U32 local, U32 now, DartsInputBuffer& input, bool allowView = false)
+    const void* data, std::size_t size, U32 remote, U32 local, U32 now, DartsInputBuffer& input,
+    bool allowView = false, bool allowTimed = false, bool allowBlend = false)
 {
     const bool extended = allowView && size == sizeof(DartsViewInputPacket);
-    if (!data || (size != sizeof(DartsInputPacket) && !extended) || localPlayer != 0) return false;
-    U32 viewSequence = 0;
-    if (extended)
+    const bool timed = allowView && allowTimed && size == sizeof(DartsTimedInputPacket);
+    const bool blended = allowView && allowBlend && size == sizeof(DartsBlendedInputPacket);
+    if (!data || (size != sizeof(DartsInputPacket) && !extended && !timed && !blended) || localPlayer != 0) return false;
+    U32 viewSequence = 0, stageTimeMs = 0, previousView = 0, blend = 0;
+    if (blended)
+    {
+        DartsBlendedInputPacket click;
+        std::memcpy(&click, data, sizeof(click));
+        if (!ValidDartsBlend(click.input.stage, click.viewSequence, click.previousView, click.blend)) return false;
+        viewSequence = click.viewSequence;
+        previousView = click.previousView;
+        blend = click.blend;
+    }
+    else if (timed)
+    {
+        DartsTimedInputPacket click;
+        std::memcpy(&click, data, sizeof(click));
+        if (!click.viewSequence || !ValidDartsStageTime(click.input.stage, click.stageTimeMs)) return false;
+        viewSequence = click.viewSequence;
+        stageTimeMs = click.stageTimeMs;
+    }
+    else if (extended)
     {
         DartsViewInputPacket view;
         std::memcpy(&view, data, sizeof(view));
@@ -258,13 +332,20 @@ inline bool AcceptDartsInput(const State& s, U32 localPlayer, const DartsTurn& c
     if (input.consumedSerial == p.throwSerial && input.consumedStage == p.stage) return false;
     input.packet = p;
     input.viewSequence = viewSequence;
+    input.stageTimeMs = stageTimeMs;
+    input.previousView = previousView;
+    input.blend = blend;
     input.tick = now;
     input.received = true;
     return true;
 }
-inline bool ConsumeDartsInput(const State& s, const DartsTurn& current, DartsInputBuffer& input, U32 now, U32* viewSequence = nullptr)
+inline bool ConsumeDartsInput(const State& s, const DartsTurn& current, DartsInputBuffer& input, U32 now,
+    U32* viewSequence = nullptr, U32* stageTimeMs = nullptr, U32* previousView = nullptr, U32* blend = nullptr)
 {
     if (viewSequence) *viewSequence = 0;
+    if (stageTimeMs) *stageTimeMs = 0;
+    if (previousView) *previousView = 0;
+    if (blend) *blend = 0;
     if (!input.received || input.consumedSequence == input.packet.sequence ||
         (input.consumedSerial == input.packet.throwSerial && input.consumedStage == input.packet.stage)) return false;
     const bool apply = DartsInputTurn(s,current,input.packet) && now-input.tick <= 500;
@@ -274,6 +355,9 @@ inline bool ConsumeDartsInput(const State& s, const DartsTurn& current, DartsInp
     if (apply)
     {
         if (viewSequence) *viewSequence = input.viewSequence;
+        if (stageTimeMs) *stageTimeMs = input.stageTimeMs;
+        if (previousView) *previousView = input.previousView;
+        if (blend) *blend = input.blend;
         input.consumedSerial = input.packet.throwSerial;
         input.consumedStage = input.packet.stage;
     }
@@ -320,6 +404,34 @@ struct PoolInputPacket
     float aimX = 0, aimY = 0;
     U32 shootPresses = 0, shootReleases = 0;
 };
+struct PoolShot
+{
+    float dirX = 0, dirZ = 0, power = 0;
+};
+struct PoolShotInputPacket
+{
+    PoolInputPacket input;
+    PoolShot shot;
+};
+struct PoolPlacement
+{
+    float x = 0, z = 0;
+};
+struct PoolPlaceInputPacket
+{
+    PoolInputPacket input;
+    PoolPlacement placement;
+};
+inline bool ValidPoolPlacement(const PoolPlacement& p)
+{
+    // Relative to the native cue-ball placement origin on this table.
+    return p.x * p.x + p.z * p.z <= 0.501f * 0.501f;
+}
+inline bool ValidPoolShot(const PoolShot& shot)
+{
+    const float lengthSq = shot.dirX * shot.dirX + shot.dirZ * shot.dirZ;
+    return lengthSq >= 0.98f && lengthSq <= 1.02f && shot.power >= 0 && shot.power <= 1;
+}
 inline void UpdatePoolInput(PoolInputPacket& p, U32 serial, float aimX, float aimY, bool pressed, bool released)
 {
     if (p.shotSerial != serial)
@@ -336,10 +448,17 @@ struct PoolControls
 {
     float aimX = 0, aimY = 0;
     bool shootPressed = false, shootReleased = false;
+    bool hasShotIntent = false;
+    PoolShot shot;
+    bool hasPlacementIntent = false;
+    PoolPlacement placement;
 };
 struct PoolInputBuffer
 {
     PoolInputPacket packet;
+    PoolShot shot;
+    PoolPlacement placement;
+    bool hasPlacement = false;
     U32 consumedPresses = 0, consumedReleases = 0, tick = 0;
     bool received = false, epochResetPending = false;
 };
@@ -350,9 +469,11 @@ inline bool PoolInputTurn(const State& s, const PoolTurn& current, const PoolInp
         p.shotSerial != 0 && p.shotSerial == current.serial;
 }
 inline bool AcceptPoolInput(const State& s, U32 localPlayer, const PoolTurn& current,
-    const void* data, std::size_t size, U32 remote, U32 local, U32 now, PoolInputBuffer& input)
+    const void* data, std::size_t size, U32 remote, U32 local, U32 now, PoolInputBuffer& input, bool allowShot = false)
 {
-    if (!data || size != sizeof(PoolInputPacket) || localPlayer != 0) return false;
+    const bool extended = allowShot && size == sizeof(PoolShotInputPacket);
+    const bool place = allowShot && size == sizeof(PoolPlaceInputPacket);
+    if (!data || (size != sizeof(PoolInputPacket) && !extended && !place) || localPlayer != 0) return false;
     PoolInputPacket p;
     std::memcpy(&p, data, sizeof(p));
     if (p.magic != POOL_INPUT_MAGIC || !Bound(p.sender,p.receiver,remote,local) || !p.sequence || !p.inputEpoch ||
@@ -364,6 +485,28 @@ inline bool AcceptPoolInput(const State& s, U32 localPlayer, const PoolTurn& cur
     const bool reset = newShot || newEpoch;
     if (p.shootPresses-(reset ? 0 : input.packet.shootPresses) > 256 ||
         p.shootReleases-(reset ? 0 : input.packet.shootReleases) > 256) return false;
+    if (extended)
+    {
+        PoolShotInputPacket release;
+        std::memcpy(&release, data, sizeof(release));
+        if (current.stage == 1 || !p.shootReleases || !ValidPoolShot(release.shot)) return false;
+        input.shot = release.shot;
+        input.hasPlacement = false;
+    }
+    else if (place)
+    {
+        PoolPlaceInputPacket release;
+        std::memcpy(&release, data, sizeof(release));
+        if (current.stage != 1 || !p.shootReleases || !ValidPoolPlacement(release.placement)) return false;
+        input.placement = release.placement;
+        input.hasPlacement = true;
+        input.shot = {};
+    }
+    else if (reset || p.shootReleases != input.packet.shootReleases)
+    {
+        input.shot = {};
+        input.hasPlacement = false;
+    }
     if (reset) input.consumedPresses = input.consumedReleases = 0;
     if (newShot) input.epochResetPending = false;
     else if (newEpoch) input.epochResetPending = true;
@@ -389,6 +532,10 @@ inline bool ConsumePoolInput(const State& s, const PoolTurn& current, PoolInputB
         controls.aimY = input.packet.aimY;
         controls.shootPressed = input.packet.shootPresses != input.consumedPresses;
         controls.shootReleased = input.packet.shootReleases != input.consumedReleases;
+        controls.hasShotIntent = controls.shootReleased && current.stage != 1 && ValidPoolShot(input.shot);
+        if (controls.hasShotIntent) controls.shot = input.shot;
+        controls.hasPlacementIntent = controls.shootReleased && current.stage == 1 && input.hasPlacement;
+        if (controls.hasPlacementIntent) controls.placement = input.placement;
     }
     input.consumedPresses = input.packet.shootPresses;
     input.consumedReleases = input.packet.shootReleases;

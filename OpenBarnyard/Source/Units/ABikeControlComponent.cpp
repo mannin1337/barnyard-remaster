@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "Debug/AInputLatency.h"
 #include "ABikeControlComponent.h"
 #include "AUnit.h"
 #include "AUnitType.h"
@@ -32,6 +33,12 @@
 
 TOSHI_NAMESPACE_USING
 #include "ABikeDriver.inc"
+
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
+// The normal control component feeds the bike physics on its next AI update.
+static ABikeControlComponent* s_jumpSource = TNULL;
+static TUINT s_jumpSample = 0;
+#endif
 
 TPSTRING8_DECLARE( ASimState );
 
@@ -77,7 +84,18 @@ void ABikeControlComponent::UpdateAI( TFLOAT a_fDeltaTime )
 	TMath::Clip( m_vecInput.x, -1.0f, 1.0f );
 	TMath::Clip( m_vecInput.y, -1.0f, 1.0f );
 
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
+	const TBOOL wasJumping = pSteer->IsJumping();
+#endif
 	pSteer->SetDesiredVelocity( m_vecInput );
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
+	if ( s_jumpSource == this )
+	{
+		if ( !wasJumping && pSteer->IsJumping() )
+			AInputLatency::Action( s_jumpSample, "bike", "jump" );
+		s_jumpSource = TNULL;
+	}
+#endif
 
 	m_vecInput   = TVector4::VEC_ZERO;
 	m_vecInput.w = 0.0f;
@@ -145,6 +163,17 @@ TBOOL ABikeControlComponent::ProcessCommand( AInputCommand a_eCommand, const TIn
 			{
 				a_pEvent->StartRepeat( 0.0f, 0.0f );
 				m_vecInput.w += 1.0f;
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
+				if ( const TUINT sample = AInputLatency::Current() )
+				{
+					AGameState* state = AGameStateController::GetSingleton()->GetCurrentState();
+					if ( state && state->IsA( &TGetClass( ABikeRaceMicroGame ) ) )
+					{
+						s_jumpSource = this;
+						s_jumpSample = sample;
+					}
+				}
+#endif
 			}
 			return TTRUE;
 		case AInputCommand_Brake:
@@ -224,6 +253,9 @@ TBOOL ABikeControlComponent::ProcessCommand( AInputCommand a_eCommand, const TIn
 // $Barnyard: FUNCTION 0058b4b0
 void ABikeControlComponent::OnDisable()
 {
+#if defined( BARNYARD_COMMUNITY_PATCH ) && !defined( TOSHI_FINAL )
+	if ( s_jumpSource == this ) s_jumpSource = TNULL;
+#endif
 	m_bBoost = TFALSE;
 	AControlComponent::OnDisable();
 }

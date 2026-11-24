@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "Debug/AInputLatency.h"
 #include "Player/ACoopMinigame.h"
 #include "AStatuesMiniGameState.h"
 #include "Sound/APositionalSoundSet.h"
@@ -37,6 +38,9 @@
 #include <Core/TMemoryDebugOn.h>
 
 TOSHI_NAMESPACE_USING
+
+// The minigame holds one key until its next update. Keep its input sample with it.
+static TUINT s_poseKeySample = 0;
 
 TPSTRING8_DECLARE( AStatuesMiniGameState );
 TPSTRING8_DECLARE( ATeaseMrsBeadyGame );
@@ -167,23 +171,26 @@ TBOOL AStatuesMiniGameState::ProcessCommand( AInputCommand a_eInputCommand, cons
 		case AInputCommand_Quit:
 		case AInputCommand_Start:
 			// Can't pause before the intro has started
-			if ( m_bIntroStarted ) break;
-			return TTRUE;
+			if ( !m_bIntroStarted ) return TTRUE;
+			return AMiniGameState::ProcessCommand( a_eInputCommand, a_pInputEvent, a_rStopEvents );
 		case AInputCommand_Up:
 			m_eKey = STATUESKEY_1;
-			return TTRUE;
+			break;
 		case AInputCommand_Down:
 			m_eKey = STATUESKEY_DOWN;
-			return TTRUE;
+			break;
 		case AInputCommand_Left:
 			m_eKey = STATUESKEY_2;
-			return TTRUE;
+			break;
 		case AInputCommand_Right:
 			m_eKey = STATUESKEY_3;
-			return TTRUE;
+			break;
+		default:
+			return AMiniGameState::ProcessCommand( a_eInputCommand, a_pInputEvent, a_rStopEvents );
 	}
 
-	return AMiniGameState::ProcessCommand( a_eInputCommand, a_pInputEvent, a_rStopEvents );
+	s_poseKeySample = AInputLatency::Current();
+	return TTRUE;
 }
 
 // $Barnyard: FUNCTION 00487dd0
@@ -708,6 +715,8 @@ void AStatuesMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 		else
 		{
 			AStatuesPose* pPose = m_oHud.HandleKey( m_eKey );
+			if ( m_eKey != STATUESKEY_DOWN && ( !pPose || pPose->aKeys[ 0 ] != STATUESKEY_NONE ) )
+				AInputLatency::Action( s_poseKeySample, m_bIsMrsBeady ? "beady" : "mailman", "pose-hud" );
 
 			if ( pPose )
 			{
@@ -787,6 +796,7 @@ void AStatuesMiniGameState::UpdateGame( TFLOAT a_fDeltaTime )
 
 		m_pStatue->PlayAnimation( TPS8( idle_quad ) );
 		m_pQuad->PlayAnimation( TPS8( land ) );
+		AInputLatency::Action( s_poseKeySample, m_bIsMrsBeady ? "beady" : "mailman", "drop" );
 		m_pQuad->SetSkeletonUpdating( TTRUE, TTRUE );
 		AShadowManager::GetSingleton()->SetShadowEnabled( m_pQuad->GetModelInstance(), TTRUE );
 	}

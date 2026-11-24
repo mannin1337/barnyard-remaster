@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Player/ACoopMinigame.h"
+#include "Debug/AInputLatency.h"
 #include "AChickenFireMinigameState.h"
 #include "AMiniGameManager.h"
 #include "Animation/AAnimatableObject.h"
@@ -283,12 +284,14 @@ TBOOL AChickenFireMinigameState::ProcessCommand( AInputCommand a_eInputCommand, 
 	if ( m_eState == STATE_FALLING || m_eState == STATE_SPLASHED || m_eState == STATE_RESULTS )
 		return AMiniGameState::ProcessCommand( a_eInputCommand, a_pInputEvent, a_rStopEvents );
 
-	PlayerInput& rInput = m_aInputs[ APlayerManager::GetSingleton()->GetCurrentPlayerIterator() ];
+	const TINT iPlayer = APlayerManager::GetSingleton()->GetCurrentPlayerIterator();
+	PlayerInput& rInput = m_aInputs[ iPlayer ];
 
 	switch ( a_eInputCommand )
 	{
 		case AInputCommand_Select:
 			rInput.bBash = TTRUE;
+			m_bashSample[iPlayer] = AInputLatency::Current();
 			return TTRUE;
 		case AInputCommand_Move:
 			if ( a_pInputEvent->GetSource()->IsA( &TGetClass( TInputDeviceMouse ) ) )

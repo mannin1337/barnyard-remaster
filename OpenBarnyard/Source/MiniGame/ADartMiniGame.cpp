@@ -1,6 +1,5 @@
 #include "pch.h"
 #include "Player/ACoopMinigame.h"
-#include "Player/ACoopMinigameTiming.h"
 #include "Terrain/ATerrainInterface.h"
 #include <Render/TCameraObject.h>
 #include "ADartMiniGame.h"
@@ -34,6 +33,7 @@
 #include "Units/AAnimatedUnit.h"
 #include "Units/AInteractionComponent.h"
 #include "Units/AUnitManager.h"
+#include "Units/AUnitProxy.h"
 #include "Units/AUnitTransform.h"
 #include "UnitMovement/Steering/AStationarySteer.h"
 
@@ -44,7 +44,9 @@
 #include "SoundBank/darts.h"
 #include "SoundBank/music.h"
 #include "SoundBank/ui.h"
+#include "Debug/AInputLatency.h"
 #include <chrono>
+#include <cmath>
 
 //-----------------------------------------------------------------------------
 // Enables memory debugging.
@@ -116,6 +118,18 @@ static constexpr TUINT32 DARTS_VIEW_MAGIC = 0x32564443;
 static constexpr TUINT32 DARTS_VIEW_MASK = ( 1u << 20 ) - 1;
 
 #include "darts_spectator.inc"
+static_assert(ADart::STATE_AIM_X == 1 && ADart::STATE_AIM_Y == 2 &&
+              ADart::STATE_THROW == 3 && ADart::STATE_THROWING == 9 && ADart::STATE_FLYING == 11);
+
+TVector4 DartsFacing(ADartThrow& aim)
+{
+	aim.ComputeDirection();
+	TVector4 direction;
+	direction.Multiply(aim.m_vDirection,0.25f);
+	direction.x += 0.75f; // Blend the board ray with the native +X facing.
+	direction.Normalise();
+	return direction;
+}
 
 TUINT32 DartsNowMs()
 {
@@ -221,7 +235,7 @@ TUINT32 DartsViewHash( const DartsViewFrame& frame )
 struct ADartMiniGame::CoopView
 {
 	TBOOL saved = TFALSE;
-	TFLOAT publishWait = 0;
+	TBOOL forcePublish = TFALSE;
 	TMatrix44 models[43]; // 3 rings, 20 targets, 20 darts
 	AModelInstance* viewModels[43];
 	TMatrix44 targetBases[20]; // Static terrain locators for this board.
@@ -238,11 +252,15 @@ struct ADartMiniGame::CoopView
 	TINT displayedScore[2] = {-1,-1};
 	DartsViewMotion motion;
 	DartsAimHistory aimHistory;
+	DartsLocalAim localAim;
+	DartsFirstLock acceptedFirst;
+	TUINT pendingAimSample = 0, pendingThrowSample = 0;
 	TUINT hostMatch = 0, lockMatch = 0, lockSerial = 0, lockStage = 0, lockTick = 0, promptStage = 0;
 	TFLOAT lockAxis = 0;
 	TBOOL usedFallback = TFALSE;
 	AAnimatedUnit* heldDart = TNULL;
 	TVector4 heldScale;
+	TVector4 flightStart;
 	TUINT loggedHand = 0;
 	TBOOL loggedMotion = TFALSE;
 
@@ -337,9 +355,11 @@ void ADartMiniGame::RestoreCoopView()
 	view.saved = TFALSE;
 	view.motion = DartsViewMotion{};
 	view.aimHistory = DartsAimHistory{};
+	view.localAim = {};
+	view.pendingAimSample = view.pendingThrowSample = 0;
 	view.lockStage = view.promptStage = view.loggedHand = 0;
 	view.loggedMotion = TFALSE;
-	view.publishWait = 0;
+	view.forcePublish = TTRUE;
 	m_oFireHud.SetBarXVisible(TFALSE); m_oFireHud.SetBarYVisible(TFALSE);
 	m_oFireHud.SetBullseyeVisible(TFALSE); m_oFireHud.SetTargetLockVisible(TFALSE);
 	m_oRoundHud.SetForceHide(TTRUE);
@@ -373,9 +393,15 @@ TBOOL ADartMiniGame::OnUpdate( TFLOAT dt )
 			const TBOOL logViews = realtime && ACoopMinigame::IsViewLogEnabled();
 			const TFLOAT lastAimX = view.motion.shown.aimX, lastAimY = view.motion.shown.aimY;
 			const TUINT32 now = DartsNowMs();
-			view.motion.Update(received,sequence,match,dt);
-			const DartsViewFrame& frame = view.motion.shown;
+			const bool ownTurn = realtime && received.currentPlayer == ACoopMinigame::GetRealtimeDartsLocalPlayer() && !ACoopMinigame::BlockInput();
+			view.motion.Update(received,sequence,match,dt,ownTurn && ACoopMinigame::SupportsDartsBlendedAim());
 			if (fresh) view.aimHistory.Record(received,sequence,match,now);
+			view.localAim.Update(received,match,ownTurn,now,dt,m_pData[received.round].fAimFrequencyY);
+			if (view.localAim.TakeSecond(received,now))
+				ACoopMinigame::SubmitDartsInput(received.throwSerial,2,view.localAim.first.reference,view.localAim.phaseMs);
+			if (!view.localAim.first.dart) view.pendingAimSample = view.pendingThrowSample = 0;
+			DartsViewFrame frame = view.motion.shown;
+			view.localAim.Present(frame);
 			if (logViews && !fresh && !view.loggedMotion && (TMath::Abs(frame.aimX-lastAimX) > 0.0001f || TMath::Abs(frame.aimY-lastAimY) > 0.0001f))
 			{
 				view.loggedMotion = TTRUE;
@@ -470,14 +496,40 @@ TBOOL ADartMiniGame::OnUpdate( TFLOAT dt )
 				const TBOOL visible = (frame.visibleDarts & (1u << i)) != 0;
 				models[23+i]->SetVisible(visible);
 				models[23+i]->SetSkeletonUpdating(visible);
-				if ( visible && !(i == dartIndex && view.heldDart) ) ApplyDartsViewPose(models[23+i],frame.darts[i]);
+				if (!visible || (i == dartIndex && view.heldDart)) continue;
+				if (i == dartIndex && view.localAim.released)
+				{
+					// Draw the flight to the aimed board plane. The next authoritative
+					// result supplies the exact collision pose and any target change.
+					const TVector4 boardPoint = right * frame.aimX + top * frame.aimY;
+					TVector4 position;
+					position.Lerp4(view.flightStart,boardPoint,view.localAim.flight);
+					position.w = 1;
+					TVector4 direction = boardPoint - view.flightStart;
+					direction.Normalise();
+					direction.RotateAroundAxis(TVector4::VEC_NEGY,-TMath::PI * 0.5f);
+					models[23+i]->SetTransform(position,direction);
+					TMatrix44 matrix;
+					models[23+i]->GetLocalTransform(matrix);
+					const TFLOAT scale = 1 + 9 * view.localAim.flight;
+					matrix.Scale(scale,scale,scale);
+					models[23+i]->SetTransform(matrix);
+				}
+				else ApplyDartsViewPose(models[23+i],frame.darts[i]);
 			}
 			for ( TINT p = 0; p < NUM_PLAYERS; ++p )
 			{
 				const auto& visual = frame.players[p];
 				AAnimatedUnit* unit = TSTATICCAST(AAnimatedUnit,m_aPlayers[p].pUnit);
 				TVector4 direction(visual.direction[0],visual.direction[1],visual.direction[2],0);
-				if (direction.x*direction.x+direction.y*direction.y+direction.z*direction.z < 0.25f)
+				if (view.localAim.first.dart && p == TINT(frame.currentPlayer))
+				{
+					ADartThrow aim{};
+					aim.m_fAimX = frame.aimX;
+					aim.m_fAimY = frame.aimY;
+					direction = DartsFacing(aim);
+				}
+				else if (direction.x*direction.x+direction.y*direction.y+direction.z*direction.z < 0.25f)
 					direction.Set(received.players[p].direction[0],received.players[p].direction[1],received.players[p].direction[2],0);
 				direction.Normalise();
 				unit->GetSteer()->SetDirection(direction);
@@ -486,8 +538,9 @@ TBOOL ADartMiniGame::OnUpdate( TFLOAT dt )
 				AAnimatableObject* object = unit->GetAnimatableObject();
 				const TPString8& clip = *s_dartsViewAnims[visual.animation];
 				const bool dartChanged = view.visualDart[p] != visual.dart;
+				const bool localThrow = view.localAim.fired && p == TINT(frame.currentPlayer);
 				const TBOOL startClip = view.visualAnimation[p] != TINT(visual.animation) || dartChanged ||
-				                        (fresh && !object->IsAnimPlaying(clip,0));
+				                        (!localThrow && fresh && !object->IsAnimPlaying(clip,0));
 				if (startClip)
 				{
 					object->KillAllAnimations();
@@ -495,8 +548,13 @@ TBOOL ADartMiniGame::OnUpdate( TFLOAT dt )
 					view.visualAnimation[p] = visual.animation; view.visualDart[p] = visual.dart;
 				}
 				// The engine advances the clip between packets, including the dart_loc attachment.
-				if (startClip || (fresh && TMath::Abs(object->GetAnimationTime(clip)-visual.animationTime) > 0.12f))
+				if (startClip || (!localThrow && fresh && TMath::Abs(object->GetAnimationTime(clip)-visual.animationTime) > 0.12f))
 					object->SetAnimationTime(clip,visual.animationTime);
+				if (localThrow && view.pendingThrowSample)
+				{
+					AInputLatency::Action(view.pendingThrowSample,"darts","throw-animation");
+					view.pendingThrowSample = 0;
+				}
 				if (first || view.displayedScore[p] != visual.score)
 				{
 					m_aPlayers[p].pPortrait->SetScore(visual.score);
@@ -509,19 +567,25 @@ TBOOL ADartMiniGame::OnUpdate( TFLOAT dt )
 				m_aPlayers[p].pPortrait->SetClockDuration(frame.timeLimit);
 				m_aPlayers[p].pPortrait->SetClockTime(frame.timeLeft);
 			}
-			const TBOOL aiming = frame.state == ADart::STATE_AIM_X || frame.state == ADart::STATE_AIM_Y ||
+			const bool throwLocked = view.localAim.fired && !view.localAim.released;
+			const TBOOL aiming = throwLocked || frame.state == ADart::STATE_AIM_X || frame.state == ADart::STATE_AIM_Y ||
 			                    (frame.state >= ADart::STATE_AI_TARGET && frame.state <= ADart::STATE_AI_AIM_Y);
 			m_oFireHud.SetColour(m_aPlayers[frame.currentPlayer].afColour[0],m_aPlayers[frame.currentPlayer].afColour[1],m_aPlayers[frame.currentPlayer].afColour[2]);
-			if (view.lockStage && (match != view.lockMatch || frame.throwSerial != view.lockSerial ||
-			    frame.aimStage != view.lockStage || ACoopMinigame::BlockInput())) view.lockStage = 0;
-			const TUINT shownLock = now-view.lockTick <= DartsAimWindowMs ? view.lockStage : 0;
+			if (view.lockStage && (match != view.lockMatch || received.throwSerial != view.lockSerial ||
+			    received.aimStage != view.lockStage || ACoopMinigame::BlockInput())) view.lockStage = 0;
+			const TUINT shownLock = !view.localAim.first.dart && now-view.lockTick <= DartsAimWindowMs ? view.lockStage : 0;
 			const TFLOAT aimX = shownLock == 2 ? view.lockAxis : frame.aimX;
 			const TFLOAT aimY = shownLock == 1 ? view.lockAxis : frame.aimY;
 			m_oFireHud.SetBarX(-aimX); m_oFireHud.SetBarY(-aimY);
 			m_oFireHud.SetBarXVisible(aiming && frame.state != ADart::STATE_AIM_X); m_oFireHud.SetBarYVisible(aiming);
 			m_oFireHud.SetBullseyeVisible(aiming && frame.state != ADart::STATE_AIM_X);
 			m_oFireHud.SetBullseyePosition(-aimX,-aimY);
-			if (shownLock) m_oFireHud.SetBarXLocked(TTRUE);
+			if (shownLock || throwLocked) m_oFireHud.SetBarXLocked(TTRUE);
+			if (view.pendingAimSample && view.localAim.first.dart && !view.localAim.fired)
+			{
+				AInputLatency::Action(view.pendingAimSample,"darts","second-aim-bar");
+				view.pendingAimSample = 0;
+			}
 			if ( realtime )
 			{
 				const TBOOL localAim = frame.currentPlayer == ACoopMinigame::GetRealtimeDartsLocalPlayer() && frame.aimStage != 0 && !ACoopMinigame::BlockInput();
@@ -567,7 +631,7 @@ TBOOL ADartMiniGame::OnUpdate( TFLOAT dt )
 				}
 				if ( logViews && fresh )
 				{
-					TINFO("[darts-pvp] frame apply match=%u sequence=%u throw=%u owner=%u round=%u state=%u hit=%u targets=%05x scores=%d,%d totals=%d,%d hash=%08x\n",match,sequence,frame.throwSerial,frame.currentPlayer,frame.round + 1,frame.state,frame.lastHitSerial,frame.presentTargets,frame.players[0].score,frame.players[1].score,frame.totalScore[0],frame.totalScore[1],DartsViewHash(received));
+					TINFO("[darts-pvp] frame apply match=%u sequence=%u throw=%u owner=%u round=%u state=%u hit=%u targets=%05x scores=%d,%d totals=%d,%d hash=%08x\n",match,sequence,frame.throwSerial,frame.currentPlayer,frame.round + 1,received.state,frame.lastHitSerial,frame.presentTargets,frame.players[0].score,frame.players[1].score,frame.totalScore[0],frame.totalScore[1],DartsViewHash(received));
 				}
 			}
 			if ( first ) TINFO("[coopmini] Darts spectator applied; native started=%d round=%d score=%d\n",m_bStarted,m_iRound,m_bStarted ? m_aPlayers[0].iScore : 0);
@@ -575,7 +639,12 @@ TBOOL ADartMiniGame::OnUpdate( TFLOAT dt )
 		else
 		{
 			HideCoopDartsPrompt(m_oInteractionHud);
-			if (m_pCoopView) m_pCoopView->promptStage = 0;
+			if (m_pCoopView)
+			{
+				m_pCoopView->localAim = {};
+				m_pCoopView->pendingAimSample = m_pCoopView->pendingThrowSample = 0;
+				m_pCoopView->lockStage = m_pCoopView->promptStage = 0;
+			}
 		}
 		return AGameState::OnUpdate(dt);
 	}
@@ -587,7 +656,8 @@ TBOOL ADartMiniGame::OnUpdate( TFLOAT dt )
 	if ( ACoopMinigame::IsPlaying() && ( !ACoopMinigame::BlockInput() || (realtime && ACoopMinigame::IsRealtimeDartsHost()) ) && m_bStarted )
 	{
 		if ( !m_pCoopView ) m_pCoopView = new CoopView;
-		if (!CoopMini::ViewSendDue(m_pCoopView->publishWait,dt)) return result;
+		if (!ACoopMinigame::ShouldCaptureSpectatorFrame(this,dt,m_pCoopView->forcePublish)) return result;
+		m_pCoopView->forcePublish = TFALSE;
 		DartsViewFrame frame{};
 		frame.magic = DARTS_VIEW_MAGIC;
 		frame.currentPlayer = m_iCurrentPlayer; frame.round = m_iRound;
@@ -696,18 +766,39 @@ TBOOL ADartMiniGame::ProcessCommand( AInputCommand a_eInputCommand, const TInput
 			TUINT match = 0;
 			if (!m_pCoopView || !m_pCoopView->saved ||
 			    !ACoopMinigame::ReadSpectatorFrame(this,&frame,sizeof(frame),TNULL,&match) || !ValidDartsView(frame) ||
-			    frame.currentPlayer != ACoopMinigame::GetRealtimeDartsLocalPlayer() || !frame.aimStage) return TTRUE;
+			    frame.currentPlayer != ACoopMinigame::GetRealtimeDartsLocalPlayer() || frame.finished) return TTRUE;
 			CoopView& view = *m_pCoopView;
 			const auto& shown = view.motion.shown;
 			const TUINT32 now = DartsNowMs();
-			if (view.motion.match != match || shown.throwSerial != frame.throwSerial || shown.aimStage != frame.aimStage) return TTRUE;
+			if (view.motion.match != match || shown.throwSerial != frame.throwSerial) return TTRUE;
+			if (view.localAim.first.dart == frame.throwSerial && view.localAim.first.match == match)
+			{
+				if ((frame.state == ADart::STATE_AIM_X || frame.state == ADart::STATE_AIM_Y) && view.localAim.Fire())
+				{
+					view.pendingThrowSample = AInputLatency::Current();
+					if (view.localAim.TakeSecond(frame,now))
+						ACoopMinigame::SubmitDartsInput(frame.throwSerial,2,view.localAim.first.reference,view.localAim.phaseMs);
+					TINFO("[darts-pvp] prediction throw=%u stage=2 view=%u aim=%.5f phaseMs=%u displayed=%.8f\n",
+					      frame.throwSerial,view.localAim.first.reference,view.localAim.x,view.localAim.phaseMs,view.localAim.x);
+				}
+				return TTRUE;
+			}
+			if (!frame.aimStage || shown.aimStage != frame.aimStage) return TTRUE;
 			const bool sameStage = view.lockMatch == match && view.lockSerial == frame.throwSerial && view.lockStage == frame.aimStage;
 			const DartsPressMode mode = DartsPhysicalPress(sameStage,view.usedFallback,now-view.lockTick);
 			if (mode == DartsPressMode::Wait) return TTRUE;
 			TFLOAT axis = frame.aimStage == 1 ? shown.aimY : shown.aimX;
-			TUINT32 reference = 0;
-			const bool fallback = mode == DartsPressMode::HostTime && ACoopMinigame::SupportsDartsViewAim();
-			if (!fallback && ACoopMinigame::SupportsDartsViewAim())
+			TUINT32 reference = 0, previous = 0, blend = 0;
+			const bool blended = frame.aimStage == 1 && ACoopMinigame::SupportsDartsBlendedAim();
+			const bool fallback = !blended && mode == DartsPressMode::HostTime && ACoopMinigame::SupportsDartsViewAim();
+			if (blended)
+			{
+				reference = view.motion.sequence;
+				previous = view.motion.previousFirstView;
+				blend = view.motion.firstBlend;
+				if (!view.aimHistory.ResolveClick(reference,previous,blend,match,frame.throwSerial,1,now,axis)) return TTRUE;
+			}
+			else if (!fallback && ACoopMinigame::SupportsDartsViewAim())
 			{
 				reference = view.aimHistory.Closest(view.motion.sequence,match,frame.throwSerial,frame.aimStage,now,axis);
 				if (!view.aimHistory.Resolve(reference,match,frame.throwSerial,frame.aimStage,now,axis)) return TTRUE;
@@ -718,8 +809,19 @@ TBOOL ADartMiniGame::ProcessCommand( AInputCommand a_eInputCommand, const TInput
 			view.lockSerial = frame.throwSerial;
 			view.lockStage = frame.aimStage;
 			view.lockTick = now;
-			ACoopMinigame::SubmitDartsInput(frame.throwSerial,frame.aimStage,reference);
-			TINFO("[darts-pvp] prediction throw=%u stage=%u view=%u aim=%.5f fallback=%d\n",frame.throwSerial,frame.aimStage,reference,axis,fallback);
+			if (frame.aimStage == 1 && reference && ACoopMinigame::SupportsDartsTimedAim())
+			{
+				view.localAim.Begin(match,frame.throwSerial,reference,axis,now);
+				view.pendingAimSample = AInputLatency::Current();
+			}
+			else if (frame.aimStage == 2)
+			{
+				view.localAim.FireSnapshot(match,frame.throwSerial,axis,shown.aimY,now);
+				view.pendingThrowSample = AInputLatency::Current();
+			}
+			ACoopMinigame::SubmitDartsInput(frame.throwSerial,frame.aimStage,reference,0,previous,blend);
+			TINFO("[darts-pvp] prediction throw=%u stage=%u view=%u aim=%.5f fallback=%d previous=%u blend=%u displayed=%.8f\n",
+			      frame.throwSerial,frame.aimStage,reference,axis,fallback,previous,blend,frame.aimStage == 1 ? shown.aimY : shown.aimX);
 			return TTRUE;
 		}
 	}
@@ -735,7 +837,10 @@ TBOOL ADartMiniGame::ProcessCommand( AInputCommand a_eInputCommand, const TInput
 	if ( eState == ADart::STATE_AIM_X )
 	{
 		if ( m_fAimTimerX > 0.1f )
+		{
 			m_bFireX = TTRUE;
+			if (realtime && m_pCoopView) m_pCoopView->pendingAimSample = AInputLatency::Current();
+		}
 	}
 	else
 	{
@@ -745,6 +850,7 @@ TBOOL ADartMiniGame::ProcessCommand( AInputCommand a_eInputCommand, const TInput
 		if ( m_fAimTimerY > 0.1f )
 		{
 			m_bFireY = TTRUE;
+			if (realtime && m_pCoopView) m_pCoopView->pendingThrowSample = AInputLatency::Current();
 			return TTRUE;
 		}
 	}
@@ -1050,14 +1156,19 @@ void ADartMiniGame::UpdateGame( TFLOAT a_fDeltaTime )
 		PublishCoopState();
 		const TUINT stage = GetCoopAimStage();
 		const TUINT serial = GetCoopThrowSerial();
-		TUINT reference = 0;
-		if ( m_iCurrentPlayer == 1 && stage && ACoopMinigame::ConsumeDartsInput(serial,stage,&reference) )
+		TUINT reference = 0, phaseMs = 0, previous = 0, blend = 0;
+		if ( m_iCurrentPlayer == 1 && stage && ACoopMinigame::ConsumeDartsInput(serial,stage,&reference,&phaseMs,&previous,&blend) )
 		{
 			TFLOAT& axis = stage == 1 ? m_oThrow.m_fAimY : m_oThrow.m_fAimX;
-			if (reference && (!m_pCoopView || !m_pCoopView->aimHistory.Resolve(reference,m_pCoopView->hostMatch,serial,stage,DartsNowMs(),axis)))
+			const bool valid = !reference || (m_pCoopView && (phaseMs ?
+			    stage == 2 && m_pCoopView->acceptedFirst.ResolveSecond(m_pCoopView->hostMatch,serial,reference,phaseMs,
+			        m_fAimTimerY,GetRoundData().fAimFrequencyY,axis) :
+			    m_pCoopView->aimHistory.ResolveClick(reference,previous,blend,m_pCoopView->hostMatch,serial,stage,DartsNowMs(),axis)));
+			if (!valid)
 				ACoopMinigame::DiscardDartsViewInput(serial,stage);
 			else
 			{
+				if (stage == 1 && m_pCoopView) m_pCoopView->acceptedFirst = {m_pCoopView->hostMatch,serial,reference};
 				if (reference)
 				{
 					GetThrowController(GetCurrentPlayer())->SetAim(m_oThrow.m_fAimX,m_oThrow.m_fAimY);
@@ -1065,7 +1176,8 @@ void ADartMiniGame::UpdateGame( TFLOAT a_fDeltaTime )
 					m_oFireHud.SetBarX(-m_oThrow.m_fAimX);
 					m_oFireHud.SetBarY(-m_oThrow.m_fAimY);
 					m_oFireHud.SetBullseyePosition(-m_oThrow.m_fAimX,-m_oThrow.m_fAimY);
-					TINFO("[darts-pvp] aim confirmed throw=%u stage=%u view=%u aim=%.5f\n",serial,stage,reference,axis);
+					TINFO("[darts-pvp] aim confirmed throw=%u stage=%u view=%u aim=%.5f phaseMs=%u accepted=%.8f\n",
+					      serial,stage,reference,axis,phaseMs,axis);
 				}
 				if ( stage == 1 ) m_bFireX = TTRUE;
 				else m_bFireY = TTRUE;
@@ -1228,6 +1340,11 @@ void ADartMiniGame::UpdateGame( TFLOAT a_fDeltaTime )
 				GetCurrentDart().m_eState = ADart::STATE_AIM_Y;
 				m_oFireHud.SetBullseyeVisible( TTRUE );
 				m_oFireHud.SetBullseyePosition( m_oThrow.m_fAimX * -1.0f, m_oThrow.m_fAimY * -1.0f );
+				if (m_pCoopView && m_pCoopView->pendingAimSample)
+				{
+					AInputLatency::Action(m_pCoopView->pendingAimSample,"darts","second-aim-bar");
+					m_pCoopView->pendingAimSample = 0;
+				}
 
 				if ( m_iCurrentPlayer == 0 )
 					m_oFireHud.ResetColour();
@@ -1248,6 +1365,11 @@ void ADartMiniGame::UpdateGame( TFLOAT a_fDeltaTime )
 				m_oInteractionHud.SetForceHide( TTRUE );
 				ASoundManager::GetSingleton()->PlayCue( soundbank::DARTS_PING );
 				GetCurrentDart().m_eState = ADart::STATE_THROW;
+				if (m_pCoopView && m_pCoopView->pendingThrowSample)
+				{
+					AInputLatency::Action(m_pCoopView->pendingThrowSample,"darts","throw-lock");
+					m_pCoopView->pendingThrowSample = 0;
+				}
 
 				if ( m_iCurrentPlayer == 0 )
 					m_oFireHud.ResetColour();
@@ -1592,7 +1714,7 @@ void ADartMiniGame::UpdateGame( TFLOAT a_fDeltaTime )
 				m_pCoopView->hitScore = m_oThrow.m_iScore;
 				m_pCoopView->hitTarget = m_oThrow.m_iTarget;
 				m_pCoopView->hitTeam = m_oThrow.m_iTeam;
-				m_pCoopView->publishWait = 0;
+				m_pCoopView->forcePublish = TTRUE;
 				PublishCoopState();
 				TINFO("[darts-pvp] hit native throw=%u owner=%d round=%d dart=%d target=%d team=%d points=%d scores=%d,%d totals=%d,%d\n",GetCoopThrowSerial(),m_iCurrentPlayer,m_iRound + 1,rPlayer.iCurrentDart + 1,m_oThrow.m_iTarget,m_oThrow.m_iTeam,m_oThrow.m_iScore,m_aPlayers[0].iScore,m_aPlayers[1].iScore,GetCoopTotal(0),GetCoopTotal(1));
 			}
@@ -1662,7 +1784,7 @@ void ADartMiniGame::UpdateGame( TFLOAT a_fDeltaTime )
 				if ( ACoopMinigame::IsRealtimeDartsHost() )
 				{
 					PublishCoopState();
-					if ( m_pCoopView ) m_pCoopView->publishWait = 0;
+					if ( m_pCoopView ) m_pCoopView->forcePublish = TTRUE;
 					TINFO("[darts-pvp] next throw=%u owner=%d round=%d used=%d,%d\n",GetCoopThrowSerial(),m_iCurrentPlayer,m_iRound + 1,m_aPlayers[0].iCurrentDart,m_aPlayers[1].iCurrentDart);
 				}
 			}
@@ -1682,7 +1804,7 @@ void ADartMiniGame::UpdateGameOver( TFLOAT a_fDeltaTime )
 		if ( ACoopMinigame::IsRealtimeDartsHost() && !m_bGameOverPushed )
 		{
 			m_bGameOverPushed = TTRUE;
-			if ( m_pCoopView ) m_pCoopView->publishWait = 0;
+			if ( m_pCoopView ) m_pCoopView->forcePublish = TTRUE;
 			TINFO("[darts-pvp] complete rounds=%d throws=60 totals=%d,%d\n",m_iRound + 1,GetCoopTotal(0),GetCoopTotal(1));
 			ACoopMinigame::CompleteDartsMatch(GetCoopTotal(0),GetCoopTotal(1));
 		}
@@ -1828,7 +1950,26 @@ void ADartMiniGame::OnStartHudFinished()
 void ADartMiniGame::OnUnitAction( AAnimationBreakpointUnitAction::Event* a_pEvent )
 {
 	const TBOOL realtime = ACoopMinigame::IsRealtimeDarts(this);
-	if ( (m_pCoopView && m_pCoopView->saved) || (realtime && !ACoopMinigame::IsRealtimeDartsHost()) ||
+	if (m_pCoopView && m_pCoopView->saved)
+	{
+		CoopView& view = *m_pCoopView;
+		if (view.localAim.fired && !view.localAim.released && view.heldDart &&
+		    a_pEvent->eAction == AAnimationBreakpointUnitAction::ACTION_HD_THROW && a_pEvent->pUnitProxy)
+		{
+			Player& player = m_aPlayers[view.motion.shown.currentPlayer];
+			if (a_pEvent->pUnitProxy->GetUnit() == player.pUnit)
+			{
+				AModelInstance* arm = TSTATICCAST(AAnimatedUnit,player.pUnit)->GetModelInstance();
+				TMatrix44 hand;
+				arm->GetBoneTransform(arm->GetBoneID(player.strDartBone),hand);
+				view.flightStart = hand.GetTranslation();
+				view.localAim.released = true;
+				view.ReleaseHandDart();
+			}
+		}
+		return;
+	}
+	if ( (realtime && !ACoopMinigame::IsRealtimeDartsHost()) ||
 	     (!realtime && ACoopMinigame::BlockInput()) ) return; // Display/restore animation must not release a local dart.
 	if ( a_pEvent->eAction != AAnimationBreakpointUnitAction::ACTION_HD_THROW )
 		return;
@@ -1876,22 +2017,7 @@ void ADartMiniGame::SetupRound( TINT a_iRound )
 // $Barnyard: FUNCTION 005221a0
 void ADartMiniGame::UpdatePlayerFacing()
 {
-	ASteer* pSteer = GetCurrentPlayer().pUnit->GetSteer();
-
-	m_oThrow.ComputeDirection();
-
-	static TVector4 s_vForward = TVector4::VEC_POSX;
-
-	TVector4 vThrow;
-	vThrow.Multiply( m_oThrow.m_vDirection, 0.25f );
-
-	TVector4 vForward;
-	vForward.Multiply( s_vForward, 1.0f - 0.25f );
-
-	TVector4 vDirection( vThrow.x + vForward.x, vThrow.y + vForward.y, vThrow.z + vForward.z, vThrow.w );
-	vDirection.Normalise();
-
-	pSteer->SetDirection( vDirection );
+	GetCurrentPlayer().pUnit->GetSteer()->SetDirection(DartsFacing(m_oThrow));
 }
 
 // $Barnyard: FUNCTION 00522300

@@ -1,9 +1,9 @@
 #include "pch.h"
 #include "Player/ACoopMinigame.h"
 #include "Player/ACoopPartner.h"
-#include "Player/ACoopMinigameTiming.h"
-#include "AGateCrashGuestView.h"
+#include "AGateCrashLocalInput.h"
 #include "AGateCrashMinigameState.h"
+#include "Debug/AInputLatency.h"
 #include "Sound/APositionalSoundSet.h"
 #include "Helpers/AHighScoreManager.h"
 #include "GameInterface/AAnticGameOverState.h"
@@ -127,8 +127,11 @@ struct MudPvpRun
 	TUINT lastAppliedSequence;
 	TINT publishedLives[4], appliedLives[4];
 	TBOOL localJumpHeld;
+	TUINT jumpTrace, kickTrace;
+	TFLOAT remoteActionTime;
 	TBOOL completed;
 	MudGuest::View view;
+	MudGuest::LocalInput localView;
 	TUINT renderTicks, repeatTicks, gateSteps, playerSteps;
 	double nextViewLog;
 };
@@ -193,6 +196,7 @@ TBOOL AGateCrashMinigameState::OnUpdate( TFLOAT dt )
 		if ( s_mudPvp.view.count )
 		{
 			s_mudPvp.view = {};
+			s_mudPvp.localView = {};
 			s_mudPvp.nextViewLog = 0.0;
 			s_mudPvp.renderTicks = s_mudPvp.repeatTicks = s_mudPvp.gateSteps = s_mudPvp.playerSteps = 0;
 		}
@@ -202,15 +206,27 @@ TBOOL AGateCrashMinigameState::OnUpdate( TFLOAT dt )
 
 	if ( ACoopMinigame::IsSpectating( this ) )
 	{
-		MudSpectatorFrame frame{};
+		MudGuest::InputFrame packet{};
+		const auto& frame = packet.arena;
 		TUINT sequence = 0, match = 0;
-		const TBOOL valid = ACoopMinigame::ReadSpectatorFrame( this, &frame, sizeof( frame ), &sequence, &match ) && ValidMudFrame( frame );
+		const TBOOL inputView = realtime && ACoopMinigame::SupportsMudViewInput();
+		const TBOOL newLocalPose = inputView && s_mudPvp.localView.firstFrame;
+		const TBOOL valid = ACoopMinigame::ReadSpectatorFrame( this, &packet, inputView ? sizeof( packet ) : sizeof( frame ), &sequence, &match )
+		                 && ValidMudFrame( frame ) && ( !inputView || packet.Valid() );
 		auto& view = s_mudPvp.view;
 		TBOOL fresh = TFALSE;
 		if ( realtime )
 		{
 			const auto before = view.shown;
-			fresh = view.Update( dt, valid ? &frame : TNULL, sequence, match, !ACoopMinigame::BlockInput() );
+			const TBOOL enabled = !ACoopMinigame::BlockInput();
+			fresh = view.Update( dt, valid ? &frame : TNULL, sequence, match, enabled );
+			if ( inputView && view.count )
+			{
+				auto* unit = TSTATICCAST( AAnimatedUnit, m_oGame.aSlots[1].GetUnit() );
+				const TBOOL windingUp = unit && unit->GetAnimatableObject()->IsAnimPlaying( TPS8( jump_start ), 0.0f );
+				s_mudPvp.localView.Update( dt, fresh ? &packet : TNULL, match, enabled, s_mudPvp.localJumpHeld, windingUp );
+				view.shown.slots[1] = s_mudPvp.localView.shown;
+			}
 			if ( view.jumpResolution && ACoopMinigame::IsViewLogEnabled() )
 				TINFO("[mud-view] jump-cue end match=%u sequence=%u reason=%s\n", view.match, view.sequence, view.jumpResolution);
 			if ( view.count && ACoopMinigame::IsViewLogEnabled() )
@@ -256,11 +272,18 @@ TBOOL AGateCrashMinigameState::OnUpdate( TFLOAT dt )
 				const auto& slot = shown.slots[i];
 				unit->SetVisible( TTRUE );
 				unit->GetSteer()->SetPosition( TVector4( slot.x, slot.y, slot.z, 1.0f ) );
-				if ( m_aiCoopVisualAnims[i] != slot.animation )
+				if ( m_aiCoopVisualAnims[i] != slot.animation ||
+				     ( i == 1 && newLocalPose && s_mudPvp.localView.action != MudGuest::LocalState::Locked ) )
 				{
 					unit->GetAnimatableObject()->KillAllAnimations();
 					unit->GetAnimatableObject()->PlayAnimation( *s_mudVisualAnims[slot.animation] );
 					m_aiCoopVisualAnims[i] = TUINT8( slot.animation );
+					if ( inputView && i == 1 )
+					{
+						if ( slot.animation == MudGuest::JumpStart ) AInputLatency::Action( s_mudPvp.jumpTrace, "mud", "jump-pose" );
+						if ( slot.animation == MudGuest::KickLeft || slot.animation == MudGuest::KickRight )
+							AInputLatency::Action( s_mudPvp.kickTrace, "mud", "kick-pose" );
+					}
 				}
 				if ( realtime )
 				{
@@ -285,6 +308,7 @@ TBOOL AGateCrashMinigameState::OnUpdate( TFLOAT dt )
 				}
 			}
 			UpdateGatePosition( m_vPipePos, shown.angle );
+			if ( inputView ) s_mudPvp.jumpTrace = s_mudPvp.kickTrace = 0;
 			if ( fresh )
 			{
 				TBOOL changed = s_mudPvp.lastAppliedSequence == 0 || sequence % 20 == 0;
@@ -360,9 +384,10 @@ TBOOL AGateCrashMinigameState::OnUpdate( TFLOAT dt )
 		else
 			ACoopMinigame::SetScore( m_iNumDodges * m_aScores[SCORE_DODGE] + m_iNumHits * m_aScores[SCORE_HIT] +
 			                       m_iNumKOs * m_aScores[SCORE_KO] + m_oGame.aSlots[0].iLives * m_aScores[SCORE_LIFE] );
-		if ( CoopMini::ViewSendDue( m_fCoopPublishWait, dt ) )
+		if ( ACoopMinigame::ShouldCaptureSpectatorFrame( this, dt ) )
 		{
-			MudSpectatorFrame frame{};
+			MudGuest::InputFrame packet{};
+			auto& frame = packet.arena;
 			frame.magic = MUD_FRAME_MAGIC;
 			frame.count = MAX_PLAYERS;
 			frame.angle = m_oGame.fGateAngle;
@@ -386,7 +411,23 @@ TBOOL AGateCrashMinigameState::OnUpdate( TFLOAT dt )
 				if ( realtime ) m_aiCoopVisualAnims[i] = TUINT8( visual.animation );
 			}
 			TUINT sequence = 0, match = 0;
-			ACoopMinigame::PublishSpectatorFrame( this, &frame, sizeof( frame ), &sequence, &match );
+			const TBOOL inputView = realtime && ACoopMinigame::SupportsMudViewInput();
+			if ( inputView )
+			{
+				const auto& remote = m_oGame.aSlots[1];
+				packet.state = MudGuest::LocalState::Locked;
+				if ( m_bStarted && m_oGame.iServingPlayer < 0 && !IsGameOver() )
+				{
+					if ( remote.eState == PLAYERSTATE_READY ) packet.state = MudGuest::LocalState::Ready;
+					if ( remote.eState == PLAYERSTATE_JUMPING ) packet.state = MudGuest::LocalState::Jumping;
+					if ( remote.eState == PLAYERSTATE_KICKING ) packet.state = MudGuest::LocalState::Kicking;
+				}
+				packet.velocity = remote.fJumpVelocity;
+				packet.gateSpeed = m_oGame.fGateSpeed;
+				packet.actionTime = s_mudPvp.remoteActionTime;
+				ACoopMinigame::GetMudPressCounters( packet.jumpPresses, packet.kickPresses );
+			}
+			ACoopMinigame::PublishSpectatorFrame( this, &packet, inputView ? sizeof( packet ) : sizeof( frame ), &sequence, &match );
 			if ( realtime && sequence )
 			{
 				TBOOL changed = sequence == 1 || sequence % 20 == 0;
@@ -418,16 +459,37 @@ TBOOL AGateCrashMinigameState::ProcessCommand( AInputCommand a_eInputCommand, co
 		const TBOOL up = a_pInputEvent->GetEventType() == TInputInterface::EVENT_TYPE_GONE_UP;
 		if ( a_eInputCommand == AInputCommand_Jump && ( down || up ) )
 		{
-			if ( down && !s_mudPvp.localJumpHeld && s_mudPvp.view.BeginJump() && ACoopMinigame::IsViewLogEnabled() )
-				TINFO("[mud-view] jump-cue begin match=%u sequence=%u slot=1\n", s_mudPvp.view.match, s_mudPvp.view.sequence);
+			const TBOOL pressed = down && !s_mudPvp.localJumpHeld;
 			s_mudPvp.localJumpHeld = down;
-			ACoopMinigame::SubmitMudInput( down, down, TFALSE, TFALSE, TFALSE );
+			ACoopMinigame::SubmitMudInput( down, pressed, TFALSE, TFALSE, TFALSE );
+			if ( pressed )
+			{
+				TUINT jump, kick;
+				ACoopMinigame::GetMudPressCounters( jump, kick );
+				const TBOOL began = ACoopMinigame::SupportsMudViewInput() ?
+					s_mudPvp.localView.Begin( MudGuest::LocalState::Jumping, jump ) : s_mudPvp.view.BeginJump();
+				if ( began ) s_mudPvp.jumpTrace = AInputLatency::Current();
+				if ( began && ACoopMinigame::IsViewLogEnabled() )
+					TINFO("[mud-view] jump-cue begin match=%u sequence=%u slot=1\n", s_mudPvp.view.match, s_mudPvp.view.sequence);
+			}
 			return TTRUE;
 		}
 		if ( down && ( a_eInputCommand == AInputCommand_Left || a_eInputCommand == AInputCommand_Right || a_eInputCommand == AInputCommand_Shoot ) )
 		{
-			ACoopMinigame::SubmitMudInput( s_mudPvp.localJumpHeld, TFALSE, TTRUE,
-			    a_eInputCommand != AInputCommand_Shoot, a_eInputCommand == AInputCommand_Left );
+			const TBOOL directional = a_eInputCommand != AInputCommand_Shoot;
+			const TBOOL left = a_eInputCommand == AInputCommand_Left;
+			ACoopMinigame::SubmitMudInput( s_mudPvp.localJumpHeld, TFALSE, TTRUE, directional, left );
+			if ( ACoopMinigame::SupportsMudViewInput() )
+			{
+				TUINT jump, kick;
+				ACoopMinigame::GetMudPressCounters( jump, kick );
+				if ( s_mudPvp.localView.Begin( MudGuest::LocalState::Kicking, kick, directional, left ) )
+				{
+					s_mudPvp.kickTrace = AInputLatency::Current();
+					if ( ACoopMinigame::IsViewLogEnabled() )
+						TINFO("[mud-view] kick-cue begin match=%u sequence=%u slot=1\n", s_mudPvp.view.match, s_mudPvp.view.sequence);
+				}
+			}
 			return TTRUE;
 		}
 		return AMiniGameState::ProcessCommand( a_eInputCommand, a_pInputEvent, a_rStopEvents );
@@ -439,6 +501,12 @@ TBOOL AGateCrashMinigameState::ProcessCommand( AInputCommand a_eInputCommand, co
 		return AMiniGameState::ProcessCommand( a_eInputCommand, a_pInputEvent, a_rStopEvents );
 
 	PlayerSlot& rSlot = m_oGame.aSlots[ iSlot ];
+	if ( realtime && a_pInputEvent->GetEventType() == TInputInterface::EVENT_TYPE_GONE_DOWN )
+	{
+		if ( a_eInputCommand == AInputCommand_Jump ) s_mudPvp.jumpTrace = AInputLatency::Current();
+		if ( a_eInputCommand == AInputCommand_Left || a_eInputCommand == AInputCommand_Right || a_eInputCommand == AInputCommand_Shoot )
+			s_mudPvp.kickTrace = AInputLatency::Current();
+	}
 
 	switch ( a_eInputCommand )
 	{
@@ -472,6 +540,7 @@ TBOOL AGateCrashMinigameState::ProcessCommand( AInputCommand a_eInputCommand, co
 			if ( a_pInputEvent->GetEventType() == TInputInterface::EVENT_TYPE_GONE_DOWN )
 			{
 				rSlot.bJumpPressed = TTRUE;
+				if ( realtime ) rSlot.bJumpHeld = TTRUE;
 				return TTRUE;
 			}
 
@@ -945,6 +1014,8 @@ void AGateCrashMinigameState::UpdateGame( TFLOAT a_fDeltaTime )
 {
 	const TBOOL realtime = ACoopMinigame::IsRealtimeMud( this );
 	if ( realtime ) s_mudPvp.eliminationsBeforeTick = MAX_PLAYERS - m_iNumAlive;
+	if ( realtime && ( m_oGame.aSlots[1].eState == PLAYERSTATE_JUMPING || m_oGame.aSlots[1].eState == PLAYERSTATE_KICKING ) )
+		s_mudPvp.remoteActionTime += a_fDeltaTime;
 
 	if ( m_oGame.iServingPlayer >= 0 )
 	{
@@ -974,6 +1045,7 @@ void AGateCrashMinigameState::UpdateGame( TFLOAT a_fDeltaTime )
 		if ( !m_oServeListener.IsLinked() && rServingSlot.bKickPressed )
 		{
 			pServingAnimObj->PlayAnimation( TPS8( ms_serve ) );
+			if ( realtime && m_oGame.iServingPlayer == 0 ) AInputLatency::Action( s_mudPvp.kickTrace, "mud", "serve-pose" );
 			if ( realtime ) TINFO("[mud-pvp] action slot=%d serve\n", m_oGame.iServingPlayer);
 
 			AAnimationBreakpointCallback* pBreakpoint = pServingAnimObj->GetAnimationEmitter( TPS8( ms_serve ) );
@@ -986,6 +1058,7 @@ void AGateCrashMinigameState::UpdateGame( TFLOAT a_fDeltaTime )
 			m_oGame.aSlots[ i ].bKickPressed = TFALSE;
 		}
 
+		if ( realtime ) s_mudPvp.jumpTrace = s_mudPvp.kickTrace = 0;
 		return;
 	}
 
@@ -1048,16 +1121,18 @@ void AGateCrashMinigameState::UpdateGame( TFLOAT a_fDeltaTime )
 					{
 						if ( rSlot.bJumpPressed == TTRUE )
 						{
-							rSlot.fJumpVelocity = 12.0f;
+							rSlot.fJumpVelocity = MudGuest::JumpSpeed;
 							rSlot.eState        = PLAYERSTATE_JUMPING;
-							rSlot.bJumpHeld     = TTRUE;
+							if ( !realtime || i >= 2 ) rSlot.bJumpHeld = TTRUE;
 							pAnimObj->PlayAnimation( TPS8( jump_start ) );
+							if ( realtime && i == 1 ) s_mudPvp.remoteActionTime = 0.0f;
+							if ( realtime && i == 0 ) AInputLatency::Action( s_mudPvp.jumpTrace, "mud", "jump-pose" );
 							if ( realtime && i < 2 ) TINFO("[mud-pvp] action slot=%d jump\n", i);
 						}
 
 						if ( rSlot.bKickPressed == TTRUE )
 						{
-							rSlot.fKickTimer = 0.2f;
+							rSlot.fKickTimer = MudGuest::KickWindow;
 							pAnimObj->KillAllAnimations();
 
 							const TPString8* pKickAnim;
@@ -1068,6 +1143,8 @@ void AGateCrashMinigameState::UpdateGame( TFLOAT a_fDeltaTime )
 								pKickAnim = ( m_oGame.fGateSpeed > 0.0f ) ? &TPS8( ms_kick_l ) : &TPS8( ms_kick_r );
 
 							pAnimObj->PlayAnimation( *pKickAnim );
+							if ( realtime && i == 1 ) s_mudPvp.remoteActionTime = 0.0f;
+							if ( realtime && i == 0 ) AInputLatency::Action( s_mudPvp.kickTrace, "mud", "kick-pose" );
 							rSlot.eState = PLAYERSTATE_KICKING;
 							if ( realtime && i < 2 ) TINFO("[mud-pvp] action slot=%d kick\n", i);
 						}
@@ -1075,7 +1152,7 @@ void AGateCrashMinigameState::UpdateGame( TFLOAT a_fDeltaTime )
 					break;
 				case PLAYERSTATE_JUMPING:
 					if ( rSlot.bJumpHeld && pAnimObj->IsAnimPlaying( TPS8( jump_up ), 0.0f ) )
-						rSlot.fJumpVelocity += a_fDeltaTime * 20.0f;
+						rSlot.fJumpVelocity += a_fDeltaTime * MudGuest::HeldLift;
 
 					if ( !pAnimObj->IsAnimPlaying( TPS8( jump_start ), 0.0f ) )
 					{
@@ -1084,7 +1161,7 @@ void AGateCrashMinigameState::UpdateGame( TFLOAT a_fDeltaTime )
 
 						if ( rSlot.vPosition.y < 0.0f )
 						{
-							rSlot.fJumpVelocity -= a_fDeltaTime * 49.0f;
+							rSlot.fJumpVelocity -= a_fDeltaTime * MudGuest::Gravity;
 
 							if ( m_bCharityVariant && i == 0 )
 							{
@@ -1191,13 +1268,14 @@ void AGateCrashMinigameState::UpdateGame( TFLOAT a_fDeltaTime )
 						}
 					}
 
-					if ( rSlot.fKickTimer < -0.3f )
+					if ( rSlot.fKickTimer < -MudGuest::KickRecovery )
 						rSlot.eState = PLAYERSTATE_READY;
 					break;
 			}
 
 			rSlot.bJumpPressed = TFALSE;
 			rSlot.bKickPressed = TFALSE;
+			if ( realtime && i == 0 ) s_mudPvp.jumpTrace = s_mudPvp.kickTrace = 0;
 
 			if ( rSlot.eState == PLAYERSTATE_READY || rSlot.eState == PLAYERSTATE_JUMPING )
 			{

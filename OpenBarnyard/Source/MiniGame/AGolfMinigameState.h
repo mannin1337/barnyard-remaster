@@ -340,4 +340,5 @@ protected:
 	TINT                    m_iWaterSplashBEffect;        // 0x41f8, "watersplash2b"
 	TINT                    m_iWaterRippleEffect;         // 0x41fc, "waterripple"
 	AWindmillHelper         m_oWindmillHelper;            // 0x4200
+	TUINT                   m_swingPressSample[MAX_PLAYERS] = {};
 };

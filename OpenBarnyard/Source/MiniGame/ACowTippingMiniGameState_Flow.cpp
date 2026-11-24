@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "Debug/AInputLatency.h"
 #include "Player/ACoopMinigame.h"
 #include <Render/TCameraObject.h> // before the Physics headers (Opcode #defines PI)
 #include "ACowTippingMiniGameState.h"
@@ -795,7 +796,8 @@ TBOOL ACowTippingMiniGameState::ProcessCommand( AInputCommand a_eInputCommand, c
 					a_pInputEvent->StartRepeat( 0.0f, 0.0f );
 				}
 
-				StartThrow();
+				if ( StartThrow() )
+					AInputLatency::Action( AInputLatency::Current(), "cowtipping", "throw" );
 				m_bUnk_13408 = TTRUE;
 				return TTRUE;
 			case AInputCommand_SideStep:

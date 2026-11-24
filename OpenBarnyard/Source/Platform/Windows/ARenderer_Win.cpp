@@ -23,6 +23,7 @@
 #include "Units/AAnimalPopulationManager.h"
 #include "Render/ASunFlareEffect.h"
 #include "Debug/ADebugOverlay.h"
+#include "Debug/AInputLatency.h"
 #include "Debug/AWorldDebugDraw.h"
 #include "Debug/APrimeDebug.h"
 #include "Mod/AModEvents.h"
@@ -885,7 +886,9 @@ TBOOL ARenderer::OnUpdate( TFLOAT a_fDeltaTime )
 		APrimeDebug::Render2D();
 #endif
 
+		const auto inputSubmit = pRender->IsInScene() ? AInputLatency::BeforeSubmit() : 0;
 		pRender->EndScene();
+		AInputLatency::AfterSubmit( inputSubmit );
 
 		UpdateScreenCapture( pRender );
 		return TTRUE;

@@ -24,8 +24,16 @@ ctest --test-dir build/netplay-win32 -C Release -V
 
 | Test | What it checks |
 |---|---|
-| `view_cadence` | The host publishes about 30 snapshots per second at 30, 59.94, 60 and 144 FPS and with uneven frame times. After a long stall, one update is due. |
-| `darts_view_input` | A guest click carries the chosen snapshot ID to the host and can be consumed once. The test covers a fresh click after an invalid reference, expired input, mismatched matches or peers, and the legacy 28-byte input format. |
+| `coop_minigame_protocol` | Exercises matchmaking, both players' ready flags, authority for each minigame, turn changes, results and the return to the farm. |
+| `view_cadence` | Both negotiated snapshot rates keep their cadence across different render rates. A 30 FPS sender produces at most one snapshot per frame. A stall sends only the latest pose. |
+| `darts_view_input` | Checks both local aim locks, press order, host validation and the throw animation. Includes duplicate, expired and wrong-match clicks and legacy inputs. |
 | `golf_ground` | The spectator can decode the position, heading, animation and progress of 25 gopher-trail and mound pieces. A later snapshot clears stale pieces after a dropped update. |
 | `chicken_motion` | The bird and camera continue moving between 30 Hz snapshots at 120 FPS. The test exercises a missed snapshot, a pause in the stream and a change of match. |
 | `minigame_names` | Names follow the host and guest when their roles swap. The test checks English and Hungarian scorecards, winners, times, custom translations and names containing slot markers or percent signs. |
+| `input_delivery` | The host receives the guest's selected Darts aim, Pool shot power, direction and cue-ball placement across packet loss and reordering. Checks single consumption, older wire formats, immediate local scores and rejoining a restarted host. |
+| `mud_local_input` | Exercises jumps, kicks, rejected moves and reconciliation after delayed host updates at several frame rates. |
+| `pool_local_shot` | Checks local aim, cue movement and the cue ball's first movement while the guest waits for the authoritative table. |
+| `whack_input` | Verifies single-axis mouse movement, the selected hole and stray release events during turn changes. |
+| `raw_mouse_frame` (Windows) | Queues two synthetic raw mouse events for a hidden window and checks the frame that consumes them. Covers focus, close and quit ordering. |
+
+For an in-game measurement, add `-devinputlatency` to the launch options on each computer. While a LAN minigame is running, each process writes `[input-latency]` entries to its own game log. Match an input ID across `dispatch`, `action` and `submit` to see when the game received the input, first changed the native game state, and submitted the frame. Frame numbers and timestamps can be compared within one player's log. Physical controller polling, scan-out and display response need a separate hardware measurement.

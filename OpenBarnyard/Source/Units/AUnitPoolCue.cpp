@@ -47,6 +47,21 @@ TBOOL AUnitPoolCue::Create( AUnitTransform* a_pTransform )
 	return TTRUE;
 }
 
+void AUnitPoolCue::UpdateAimPose()
+{
+	// Behind the cue ball, pulled back by the current power.
+	TVector4 vecOffset;
+	vecOffset.Multiply( m_vecDirection, m_fCueLength );
+	m_vecCuePosition.Set( m_vecCueBallPosition.x - vecOffset.x, m_vecCueBallPosition.y - vecOffset.y, m_vecCueBallPosition.z - vecOffset.z, m_vecCueBallPosition.w );
+	TVector4 vecMaxPullBack, vecPullBack;
+	vecMaxPullBack.Multiply( m_vecDirection, m_fCueLength * 0.25f );
+	vecPullBack.Multiply( vecMaxPullBack, m_fPower / m_fMaxPower );
+	m_vecCuePosition.x -= vecPullBack.x;
+	m_vecCuePosition.y -= vecPullBack.y;
+	m_vecCuePosition.z -= vecPullBack.z;
+	GetAnimatableObject()->GetModelInstance()->SetTransform( m_vecCuePosition, m_vecDirection );
+}
+
 // $Barnyard: FUNCTION 004d82c0
 void AUnitPoolCue::UpdateAI( TFLOAT a_fDeltaTime )
 {
@@ -54,22 +69,7 @@ void AUnitPoolCue::UpdateAI( TFLOAT a_fDeltaTime )
 	{
 		case STATE_AIMING:
 		{
-			// Behind the cue ball...
-			TVector4 vecOffset;
-			vecOffset.Multiply( m_vecDirection, m_fCueLength );
-			m_vecCuePosition.Set( m_vecCueBallPosition.x - vecOffset.x, m_vecCueBallPosition.y - vecOffset.y, m_vecCueBallPosition.z - vecOffset.z, m_vecCueBallPosition.w );
-
-			// ...and pulled back by the power
-			TVector4 vecMaxPullBack;
-			vecMaxPullBack.Multiply( m_vecDirection, m_fCueLength * 0.25f );
-			TVector4 vecPullBack;
-			vecPullBack.Multiply( vecMaxPullBack, m_fPower / m_fMaxPower );
-
-			m_vecCuePosition.x -= vecPullBack.x;
-			m_vecCuePosition.y -= vecPullBack.y;
-			m_vecCuePosition.z -= vecPullBack.z;
-
-			GetAnimatableObject()->GetModelInstance()->SetTransform( m_vecCuePosition, m_vecDirection );
+			UpdateAimPose();
 
 			// Fade in
 			m_fTimer = TMath::Min( m_fTimer + a_fDeltaTime, 2.0f );
@@ -221,14 +221,7 @@ void AUnitPoolCue::UpdatePowerOscillation( TFLOAT a_fDeltaTime )
 // $Barnyard: FUNCTION 004d7fb0
 void AUnitPoolCue::UpdatePullBack( TFLOAT a_fDeltaTime, TFLOAT a_fSpeedDeltaTime )
 {
-	TFLOAT fPower      = m_fPower - a_fDeltaTime;
-	TFLOAT fOneOverMax = 1.0f / m_fMaxPower;
-	fPower             = fPower - fOneOverMax * fPower * a_fDeltaTime;
-	m_fPower           = fPower;
-
-	TFLOAT fPullBack = fPower * fOneOverMax * ( m_fCueLength * 0.25f );
-	m_fPullBackSpeed = ( fPullBack - m_fPullBack ) / a_fSpeedDeltaTime;
-	m_fPullBack      = fPullBack;
+	PoolCuePower::PullBack(m_fPower,m_fPullBack,m_fPullBackSpeed,m_fMaxPower,m_fCueLength,a_fDeltaTime,a_fSpeedDeltaTime);
 }
 
 // $Barnyard: FUNCTION 004d8010

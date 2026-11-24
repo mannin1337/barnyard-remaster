@@ -1,6 +1,7 @@
 // Included by ABarnYardPoolMiniGameState.cpp. The native object keeps its retail layout.
 #include "ABarnYardPoolMiniGameState_View.h"
-#include "Player/ACoopMinigameTiming.h"
+#include "APoolLocalShot.h"
+#include "Debug/AInputLatency.h"
 
 using PoolSpectator::PoolViewFrame;
 namespace
@@ -64,22 +65,122 @@ struct ABarnYardPoolMiniGameState::CoopState
 	PoolViewFrame view{};
 	PoolSpectator::Motion motion;
 	PoolSpectator::ChargePreview charge;
+	PoolLocal::Aim aim;
+	PoolLocal::Placement placement;
+	TBOOL placeHeld = TFALSE, placeRelease = TFALSE;
+	PoolLocal::Stroke stroke;
+	TUINT forwardOnlySerial = 0, aimSample = 0, shootSample = 0;
+	TUINT downSample = 0, upSample = 0, aimSerial = 0, shootSerial = 0;
+	TBOOL placementSample = TFALSE;
+	TVector4 aimCueBefore, aimBallBefore, shotCueBefore, shotBallBefore;
 	TUINT loggedCharge = 0;
 	TUINT localSerial = 0, nativeSerial = 0, loggedMotion = 0;
 	TBOOL received = TFALSE, pressed = TFALSE, released = TFALSE, shootHeld = TFALSE;
-	TFLOAT aimX = 0, aimY = 0, mouseUntil = 0, publishWait = 0;
+	TFLOAT aimX = 0, aimY = 0, nativeAimX = 0, mouseUntil = 0;
 	TBOOL driver = TFALSE, driverDown = TFALSE, driverPlaced = TFALSE;
 	TUINT driverSerial = 0, driverStage = 0, driverPlan = 0;
 	TFLOAT driverClock = 0, driverWait = 0, driverPower = 0;
 	TVector4 driverDirection = TVector4::VEC_POSZ;
 
-	void SubmitGuestInput(TBOOL down, TBOOL up)
-	{
-		charge.Edge(view.serial,view.stage,motion.sequence,down,up);
-		ACoopMinigame::SubmitPoolInput(view.serial,aimX,aimY,down,up);
-	}
 };
 ABarnYardPoolMiniGameState::CoopState* ABarnYardPoolMiniGameState::ms_pCoop = TNULL;
+
+void ABarnYardPoolMiniGameState::TrackPoolInput(TUINT sample, TBOOL release, TBOOL placement)
+{
+	if (!sample) return;
+	auto& coop = *ms_pCoop;
+	TUINT& pending = release ? coop.shootSample : coop.aimSample;
+	if (pending) return;
+	pending = sample;
+	const TUINT serial = ACoopMinigame::IsRealtimePoolHost() ? GetCoopShotSerial() : coop.view.serial;
+	if (release) coop.shootSerial = serial;
+	else { coop.aimSerial = serial; coop.placementSample = placement; }
+	m_pCue->GetModelInstance()->GetPosition(release ? coop.shotCueBefore : coop.aimCueBefore);
+	m_pCueBall->GetModelInstance()->GetPosition(release ? coop.shotBallBefore : coop.aimBallBefore);
+}
+
+void ABarnYardPoolMiniGameState::MeasurePoolFeedback()
+{
+	auto& coop = *ms_pCoop;
+	if (!coop.aimSample && !coop.shootSample) return;
+	TVector4 cue, ball;
+	m_pCue->GetModelInstance()->GetPosition(cue);
+	m_pCueBall->GetModelInstance()->GetPosition(ball);
+	const TUINT serial = ACoopMinigame::IsRealtimePoolHost() ? GetCoopShotSerial() : coop.view.serial;
+	const bool placing = m_eState == STATE_HUMAN_PLACE_BALL;
+	const bool aiming = m_eState == STATE_HUMAN_AIM || m_eState == STATE_HUMAN_POWER;
+	if (coop.aimSerial != serial || !(coop.placementSample ? placing : aiming)) coop.aimSample = 0;
+	if (coop.aimSample)
+	{
+		const bool moved = coop.placementSample ? m_pCueBall->IsVisible() && TVector4::DistanceSq(ball,coop.aimBallBefore) > 1.e-10f :
+		    m_pCue->IsVisible() && TVector4::DistanceSq(cue,coop.aimCueBefore) > 1.e-10f;
+		if (moved)
+		{
+			AInputLatency::Action(coop.aimSample,"pool",coop.placementSample ? "cue-ball" : "local-cue");
+			coop.aimSample = 0;
+		}
+	}
+	const bool nativeContact = serial == coop.shootSerial+1 && m_eState == STATE_CUE_FOLLOW;
+	if (coop.shootSerial != serial && !nativeContact) coop.shootSample = 0;
+	if (coop.shootSample && ((m_pCue->IsVisible() && TVector4::DistanceSq(cue,coop.shotCueBefore) > 1.e-10f) ||
+	    (m_pCueBall->IsVisible() && TVector4::DistanceSq(ball,coop.shotBallBefore) > 1.e-10f)))
+	{
+		AInputLatency::Action(coop.shootSample,"pool","local-stroke");
+		coop.shootSample = 0;
+	}
+}
+
+void ABarnYardPoolMiniGameState::SubmitLocalPoolInput(TBOOL down, TBOOL up, TUINT sample)
+{
+	CoopState& coop = *ms_pCoop;
+	if (ACoopMinigame::IsRealtimePoolHost())
+	{
+		if (down && !coop.pressed) coop.downSample = sample;
+		if (up && !coop.released) coop.upSample = sample;
+		coop.pressed |= down;
+		coop.released |= up;
+		return;
+	}
+	const auto& frame = coop.view;
+	if (frame.stage == 1)
+	{
+		if (coop.placement.confirmationWait > 0) return;
+		if (down) coop.placeHeld = TTRUE;
+		if (up && coop.placeHeld)
+		{
+			coop.placeRelease = TTRUE;
+			coop.placeHeld = TFALSE;
+		}
+		// Finish this frame's movement before stamping the release position.
+		ACoopMinigame::SubmitPoolPlacement(frame.serial,coop.aimX,coop.aimY,down,TFALSE,0,0);
+		return;
+	}
+	if (coop.stroke.serial == frame.serial && (down || up)) return;
+	using Edge = PoolLocal::ShootEdge;
+	const auto accepted = coop.charge.Edge(frame.serial,frame.stage,coop.motion.sequence,down,up);
+	if (accepted == Edge::Press) TrackPoolInput(sample,TFALSE);
+	if (accepted == Edge::Release || accepted == Edge::Tap)
+	{
+		TrackPoolInput(sample,TTRUE);
+		const TVector4 ball = m_pCueBall->GetPosition();
+		const auto heading = coop.aim.serial == frame.serial ? coop.aim.direction :
+		    PoolLocal::Unit({frame.aim[0]-ball.x,frame.aim[2]-ball.z});
+		const TVector4 direction(heading.x,0,heading.z,0);
+		const TFLOAT radius = m_pCueBall->GetRadius();
+		TFLOAT clearance = 2 * radius;
+		TVector4 normal;
+		TFLOAT step, penetration;
+		TINT pocket = -1;
+		AUnit* hit = TNULL;
+		ATerrainInterface::GetSingleton()->CollideSweptSphere(ball,radius,direction,clearance,normal,0.01f,step,penetration,TCollisionCommon::TOSHICGROUPFLAG(0));
+		APoolBallSteer::CollideBalls(ball,direction,clearance,hit,m_pCueBall,radius);
+		APoolBallSteer::CollidePockets(ball,direction,clearance,pocket,NUM_POCKETS,radius,m_avPockets,m_fPocketRadius);
+		const TFLOAT power = coop.charge.power / m_pCue->GetMaxPower();
+		coop.stroke.Release(frame.serial,{ball.x,ball.z},heading,power,TMath::Max(0.0f,clearance));
+		ACoopMinigame::SubmitPoolInput(frame.serial,coop.aimX,coop.aimY,down,up,heading.x,heading.z,power);
+	}
+	else ACoopMinigame::SubmitPoolInput(frame.serial,coop.aimX,coop.aimY,down,up);
+}
 
 TUINT ABarnYardPoolMiniGameState::GetCoopShotSerial() const
 {
@@ -146,7 +247,8 @@ void ABarnYardPoolMiniGameState::DevCoopDriver( TFLOAT dt )
 	{
 		coop.driverDown = TFALSE;
 		coop.driverPlaced = TTRUE;
-		if ( !m_pCueBall->IsPlacementValid() )
+		if (coop.driverWait < 0.12f) coop.aimX = 0.35f;
+		else if ( !m_pCueBall->IsPlacementValid() )
 		{
 			coop.aimX = TFLOAT(std::sin(coop.driverClock * 0.8f)) * 0.4f;
 			coop.aimY = TFLOAT(std::cos(coop.driverClock * 0.8f)) * 0.4f;
@@ -179,8 +281,7 @@ void ABarnYardPoolMiniGameState::DevCoopDriver( TFLOAT dt )
 		}
 		if ( coop.driverPlan == serial )
 		{
-			const TVector4 target = host ? m_vAimTarget :
-			    TVector4(coop.view.aim[0],coop.view.aim[1],coop.view.aim[2],1);
+			const TVector4 target = m_vAimTarget;
 			TVector4 current = target - m_pCueBall->GetPosition();
 			current.y = 0; current.Normalise();
 			TVector4 right = m_pCamera->GetDirection();
@@ -205,7 +306,7 @@ void ABarnYardPoolMiniGameState::DevCoopDriver( TFLOAT dt )
 	}
 	else if ( stage == 3 )
 	{
-		const TFLOAT power = host ? m_pCue->GetPower() : coop.view.power * 15.0f;
+		const TFLOAT power = host ? m_pCue->GetPower() : coop.charge.power;
 		if ( power >= coop.driverPower || coop.driverWait > 2.5f )
 		{
 			up = TTRUE;
@@ -213,8 +314,10 @@ void ABarnYardPoolMiniGameState::DevCoopDriver( TFLOAT dt )
 		}
 	}
 	if ( down || up ) TINFO("[pool-driver] input serial=%u owner=%u stage=%u down=%d up=%d\n",serial,owner,stage,down,up);
-	if ( host ) { coop.pressed |= down; coop.released |= up; }
-	else coop.SubmitGuestInput(down,up);
+	const TUINT sample = down || up || coop.aimX != 0 || coop.aimY != 0 ? AInputLatency::Scripted("pool") : 0;
+	if (!down && !up && (coop.aimX != 0 || (stage == 1 && coop.aimY != 0)))
+		TrackPoolInput(sample,TFALSE,stage == 1);
+	SubmitLocalPoolInput(down,up,sample);
 }
 
 TBOOL ABarnYardPoolMiniGameState::ProcessCoopCommand( AInputCommand command, const TInputInterface::InputEvent* event, TBOOL& stop )
@@ -234,6 +337,7 @@ TBOOL ABarnYardPoolMiniGameState::ProcessCoopCommand( AInputCommand command, con
 	}
 	const TBOOL down = event->GetEventType() == TInputInterface::EVENT_TYPE_GONE_DOWN;
 	const TBOOL up = event->GetEventType() == TInputInterface::EVENT_TYPE_GONE_UP;
+	const TFLOAT oldX = coop.aimX, oldY = coop.aimY;
 	switch ( command )
 	{
 		case AInputCommand_Left: coop.mouseUntil = 0; coop.aimX = up ? 0.0f : -1.0f; break;
@@ -257,25 +361,39 @@ TBOOL ABarnYardPoolMiniGameState::ProcessCoopCommand( AInputCommand command, con
 			break;
 		}
 		case AInputCommand_Shoot:
-			coop.pressed |= down;
-			coop.released |= up;
-			break;
+			SubmitLocalPoolInput(down,up,AInputLatency::Current());
+			return TTRUE;
 		default: return AMiniGameState::ProcessCommand(command,event,stop);
 	}
-	if ( !host )
-	{
-		coop.SubmitGuestInput(coop.pressed,coop.released);
-		coop.pressed = coop.released = TFALSE;
-	}
+	if ((oldX != coop.aimX && coop.aimX != 0) || (stage == 1 && oldY != coop.aimY && coop.aimY != 0))
+		TrackPoolInput(AInputLatency::Current(),TFALSE,stage == 1);
+	if (!host) SubmitLocalPoolInput(TFALSE,TFALSE,0);
 	return TTRUE;
 }
 
-void ABarnYardPoolMiniGameState::ApplyCoopInput( TFLOAT x, TFLOAT y, TBOOL pressed, TBOOL released )
+TVector4 ABarnYardPoolMiniGameState::UpdateCoopPlacement(TUINT serial, const TVector4& ball,
+    const TVector4& camera, TFLOAT x, TFLOAT y, TFLOAT dt)
+{
+	auto clamp = [&](PoolLocal::Point proposed)
+	{
+		TVector4 bounded;
+		ABarnYardPoolAI::ClampToBallInHandArea(TVector4(proposed.x,ball.y,proposed.z,1),m_vCueBallStart,
+		    m_fBallInHandRadius,m_vForward,&bounded);
+		return PoolLocal::Point{bounded.x,bounded.z};
+	};
+	const auto point = ms_pCoop->placement.Update(serial,{ball.x,ball.z},{camera.x,camera.z},{x,y},dt,clamp);
+	return TVector4(point.x,ball.y,point.z,1);
+}
+
+void ABarnYardPoolMiniGameState::ApplyCoopInput(const ACoopMinigame::PoolInput& input, TFLOAT dt)
 {
 	CoopState& coop = *ms_pCoop;
+	const TFLOAT x = input.aimX, y = input.aimY;
+	coop.nativeAimX = x;
 	if ( !GetCoopInputStage() )
 	{
 		m_abAimInput[0] = m_abAimInput[1] = TFALSE;
+		coop.nativeAimX = 0;
 		coop.shootHeld = TFALSE;
 		coop.aimX = coop.aimY = 0;
 		coop.pressed = coop.released = TFALSE;
@@ -285,29 +403,90 @@ void ABarnYardPoolMiniGameState::ApplyCoopInput( TFLOAT x, TFLOAT y, TBOOL press
 	if ( (y < 0 && m_fAimY > 0) || (y > 0 && m_fAimY < 0) ) m_afAimSpeed[0] = 0.007f;
 	m_fAimX = x * m_afAimSpeed[1]; m_fAimY = y * m_afAimSpeed[0];
 	m_abAimInput[1] = TMath::Abs(x) > 0.0001f; m_abAimInput[0] = TMath::Abs(y) > 0.0001f;
-	if ( pressed && !coop.shootHeld && (m_eState == STATE_HUMAN_AIM || m_eState == STATE_HUMAN_PLACE_BALL) )
+	if (m_eState == STATE_HUMAN_PLACE_BALL)
+	{
+		m_pCueBall->SetPosition(UpdateCoopPlacement(GetCoopShotSerial(),m_pCueBall->GetPosition(),m_pCamera->GetDirection(),x,y,dt));
+		m_abAimInput[0] = m_abAimInput[1] = TFALSE;
+	}
+	if ( input.shootPressed && !coop.shootHeld && (m_eState == STATE_HUMAN_AIM || m_eState == STATE_HUMAN_PLACE_BALL) )
 	{
 		coop.shootHeld = TTRUE;
 		m_pCue->ResetPower();
-		if ( m_eState == STATE_HUMAN_AIM ) m_eState = STATE_HUMAN_POWER;
+		if ( m_eState == STATE_HUMAN_AIM )
+		{
+			if (m_iCurrentTeam == 0) TrackPoolInput(coop.downSample,TFALSE);
+			m_eState = STATE_HUMAN_POWER;
+		}
 	}
-	if ( released && coop.shootHeld )
+	if ( input.shootReleased && coop.shootHeld )
 	{
 		coop.shootHeld = TFALSE;
 		if ( m_eState == STATE_HUMAN_POWER )
 		{
+			if (m_iCurrentTeam == 0) TrackPoolInput(coop.upSample,TTRUE);
+			if (input.hasShotIntent)
+			{
+				const TVector4 ball = m_pCueBall->GetPosition();
+				TVector4 direction(input.shotDirX,0,input.shotDirZ,0);
+				if (!m_bAimForwardOnly || TVector4::DotProduct3(direction,m_vForward) >= 0)
+				{
+					direction.Normalise();
+					m_vAimTarget.Set(ball.x+direction.x,ball.y,ball.z+direction.z,1);
+					m_pCue->SetCueBallPosition(ball);
+					m_pCue->SetTarget(m_vAimTarget);
+				}
+				m_pCue->m_fPower = input.shotPower * m_pCue->GetMaxPower();
+			}
 			m_vShotVelocity = m_pCue->GetShotVelocity();
-			m_eState = STATE_HUMAN_SHOT;
+			m_pCue->m_fPullBack = m_pCue->GetPower()/m_pCue->GetMaxPower() * (m_pCue->m_fCueLength*0.25f);
+			m_pCue->m_fPullBackSpeed = 0;
+			m_abAimInput[0] = m_abAimInput[1] = TFALSE;
+			m_eState = STATE_SHOOT;
 		}
-		else if ( m_eState == STATE_HUMAN_PLACE_BALL && m_pCueBall->IsPlacementValid() )
+		else if (m_eState == STATE_HUMAN_PLACE_BALL)
 		{
-			m_eState = STATE_START_TURN;
-			m_fInputDelay = 0.1f;
+			const TVector4 previous = m_pCueBall->GetPosition();
+			bool valid = false;
+			if (input.hasPlacementIntent)
+			{
+				const TVector4 requested(m_vCueBallStart.x+input.placeX,previous.y,m_vCueBallStart.z+input.placeZ,1);
+				TVector4 bounded;
+				ABarnYardPoolAI::ClampToBallInHandArea(requested,m_vCueBallStart,m_fBallInHandRadius,m_vForward,&bounded);
+				valid = PoolLocal::PlaceIfClear({previous.x,previous.z},{requested.x,requested.z},{bounded.x,bounded.z},
+				    [&](PoolLocal::Point p) { m_pCueBall->SetPosition(TVector4(p.x,previous.y,p.z,1)); },
+				    [&]() { return m_pCueBall->IsPlacementValid(); });
+			}
+			else valid = m_pCueBall->IsPlacementValid();
+			if (valid)
+			{
+				m_eState = STATE_START_TURN;
+				m_fInputDelay = 0.1f;
+			}
 		}
 	}
 }
 
-void ABarnYardPoolMiniGameState::UpdateCoopInput()
+void ABarnYardPoolMiniGameState::UpdateCoopAim(TFLOAT dt)
+{
+	// Match local and remote steering even with different rendering rates.
+	CoopState& coop = *ms_pCoop;
+	const TVector4 ball = m_pCueBall->GetPosition(), camera = m_pCamera->GetDirection();
+	const PoolLocal::Point current{m_vAimTarget.x-ball.x,m_vAimTarget.z-ball.z};
+	const auto heading = coop.aim.Update(GetCoopShotSerial(),current,{camera.x,camera.z},
+	    coop.nativeAimX,dt,m_bAimForwardOnly,{m_vForward.x,m_vForward.z});
+	if (coop.nativeAimX != 0)
+	{
+		m_vAimTarget.Set(ball.x+heading.x,ball.y,ball.z+heading.z,1);
+		m_fGuideScale = -0.1f;
+	}
+	m_abAimInput[0] = m_abAimInput[1] = TFALSE;
+	m_pCue->SetCueBallPosition(ball);
+	m_pCue->SetTarget(m_vAimTarget);
+	m_pCue->UpdateAimPose();
+	UpdateCueViews();
+}
+
+void ABarnYardPoolMiniGameState::UpdateCoopInput(TFLOAT dt)
 {
 	if ( !ms_pCoop ) return;
 	CoopState& coop = *ms_pCoop;
@@ -316,12 +495,15 @@ void ABarnYardPoolMiniGameState::UpdateCoopInput()
 	{
 		coop.nativeSerial = serial;
 		coop.shootHeld = TFALSE;
-		coop.aimX = coop.aimY = 0;
-		coop.pressed = coop.released = TFALSE;
+		if (coop.localSerial != serial)
+		{
+			coop.aimX = coop.aimY = 0;
+			coop.pressed = coop.released = TFALSE;
+		}
 	}
+	ACoopMinigame::PoolInput input;
 	if ( m_iCurrentTeam == 1 )
 	{
-		ACoopMinigame::PoolInput input;
 		const TBOOL fresh = ACoopMinigame::ConsumePoolInput(serial,input);
 		if ( !fresh && coop.shootHeld )
 		{
@@ -333,10 +515,22 @@ void ABarnYardPoolMiniGameState::UpdateCoopInput()
 				TINFO("[pool-pvp] charge cancelled serial=%u owner=1 reason=input-expired\n",serial);
 			}
 		}
-		ApplyCoopInput(input.aimX,input.aimY,input.shootPressed,input.shootReleased);
-		if ( input.shootPressed || input.shootReleased ) TINFO("[pool-pvp] input native serial=%u owner=1 down=%d up=%d state=%d\n",serial,input.shootPressed,input.shootReleased,m_eState);
 	}
-	else ApplyCoopInput(coop.aimX,coop.aimY,coop.pressed,coop.released);
+	else { input.aimX = coop.aimX; input.aimY = coop.aimY; input.shootPressed = coop.pressed; input.shootReleased = coop.released; }
+	const bool placing = m_eState == STATE_HUMAN_PLACE_BALL;
+	ApplyCoopInput(input,dt);
+	coop.downSample = coop.upSample = 0;
+	if (placing)
+	{
+		const TVector4 position = m_pCueBall->GetPosition();
+		m_pCueBall->GetModelInstance()->SetTransform(position,TVector4::VEC_POSX);
+		const TVector4 shadowPosition(position.x-0.02f,position.y,position.z-0.02f,1);
+		auto* shadow = TSTATICCAST(AAnimatedUnit,m_aShadows[CUE_BALL]->GetUnit());
+		shadow->SetSteerPosition(shadowPosition);
+		shadow->GetModelInstance()->SetTransform(shadowPosition,TVector4::VEC_POSX);
+	}
+	if (m_iCurrentTeam == 1 && (input.shootPressed || input.shootReleased))
+		TINFO("[pool-pvp] input native serial=%u owner=1 down=%d up=%d state=%d\n",serial,input.shootPressed,input.shootReleased,m_eState);
 	coop.pressed = coop.released = TFALSE;
 }
 
@@ -365,13 +559,105 @@ TBOOL ABarnYardPoolMiniGameState::OnUpdate( TFLOAT dt )
 			const TBOOL infoChanged = !coop.received || std::memcmp(frame.info,coop.view.info,sizeof(frame.info)) != 0;
 			const TBOOL fresh = coop.motion.Fresh(sequence,match);
 			const TBOOL localInput = frame.owner == ACoopMinigame::GetRealtimePoolLocalPlayer() && frame.stage;
-			if (coop.motion.match != match) coop.charge = {};
+			if (coop.motion.match != match)
+			{
+				coop.charge = {};
+				coop.aim = {};
+				coop.stroke = {};
+				coop.placement = {};
+				coop.placeHeld = coop.placeRelease = TFALSE;
+				coop.forwardOnlySerial = 0;
+				coop.aimSample = coop.shootSample = 0;
+			}
 			PoolViewFrame previous;
 			if (coop.driver && !fresh) previous = coop.motion.shown;
 			coop.motion.Update(frame,sequence,match,dt,localInput);
-			const PoolViewFrame& shown = coop.motion.shown;
+			PoolViewFrame shown = coop.motion.shown;
 			if (fresh) coop.view = frame;
 			coop.received = TTRUE;
+			const TBOOL canControl = localInput && !ACoopMinigame::BlockInput();
+			const TBOOL localOwner = frame.owner == ACoopMinigame::GetRealtimePoolLocalPlayer() && !ACoopMinigame::BlockInput();
+			if (frame.stage == 1) coop.forwardOnlySerial = frame.serial;
+			if (!canControl || frame.stage != 1 || (coop.placement.serial && coop.placement.serial != frame.serial))
+			{
+				coop.placement = {};
+				coop.placeHeld = coop.placeRelease = TFALSE;
+			}
+			if (canControl)
+			{
+				if (coop.localSerial != frame.serial) { coop.localSerial = frame.serial; coop.aimX = coop.aimY = 0; }
+				DevCoopDriver(dt);
+				if (frame.stage == 1)
+				{
+					const TVector4 ball(frame.balls[0][0],frame.balls[0][1],frame.balls[0][2],1);
+					const TVector4 camera(shown.cameraDirection[0],0,shown.cameraDirection[2],0);
+					const TVector4 position = UpdateCoopPlacement(frame.serial,ball,camera,coop.aimX,coop.aimY,dt);
+					if (coop.placeRelease) coop.placement.Confirm();
+					shown.balls[0][0] = position.x;
+					shown.balls[0][2] = position.z;
+					const bool waiting = coop.placement.confirmationWait > 0;
+					ACoopMinigame::SubmitPoolPlacement(frame.serial,waiting ? 0 : coop.aimX,waiting ? 0 : coop.aimY,TFALSE,coop.placeRelease,
+					    position.x-m_vCueBallStart.x,position.z-m_vCueBallStart.z);
+					coop.placeRelease = TFALSE;
+				}
+				else ACoopMinigame::SubmitPoolInput(frame.serial,coop.aimX,coop.aimY,TFALSE,TFALSE);
+			}
+			else
+			{
+				coop.aimX = coop.aimY = 0;
+				ACoopMinigame::SubmitPoolInput(frame.serial,0,0,TFALSE,TFALSE);
+			}
+			const TBOOL wasConfirmed = coop.charge.confirmed;
+			const TFLOAT displayed = coop.charge.Update(frame,canControl,fresh,dt,ACoopMinigame::SupportsPoolShotIntent());
+			using Charge = PoolSpectator::ChargePreview;
+			const bool aiming = canControl && (frame.stage == 2 || frame.stage == 3);
+			const bool windup = frame.state == STATE_HUMAN_SHOT || frame.state == STATE_SHOOT || frame.state == STATE_CUE_STRIKE;
+			const bool following = frame.state == STATE_CUE_FOLLOW || frame.state == STATE_BALLS_ROLLING;
+			const bool stroke = localOwner && frame.winner == 6 && (frame.visibleBalls & 1u) && !(frame.pottedBalls & 1u) &&
+			    coop.stroke.WhileWaiting(frame.serial,aiming || windup,following);
+			const bool localCue = (aiming || (stroke && windup)) && frame.cueVisible;
+			PoolLocal::Point heading{};
+			TFLOAT cueDistance = m_pCue->m_fCueLength;
+			if (localCue)
+			{
+				const auto host = PoolLocal::Unit({shown.aim[0]-shown.balls[0][0],shown.aim[2]-shown.balls[0][2]});
+				heading = stroke ? coop.stroke.direction : coop.aim.Update(frame.serial,host,
+				    {shown.cameraDirection[0],shown.cameraDirection[2]},coop.aimX,dt,
+				    coop.forwardOnlySerial == frame.serial,{m_vForward.x,m_vForward.z});
+				if (aiming)
+				{
+					// The behind-cue camera orbits the same ball as the stick.
+					const float dx = shown.cameraPosition[0]-shown.balls[0][0], dz = shown.cameraPosition[2]-shown.balls[0][2];
+					const auto behind = PoolLocal::Unit({-dx,-dz});
+					if (behind.x*host.x + behind.z*host.z > 0.8f)
+					{
+						const float c = host.x*heading.x + host.z*heading.z, s = host.z*heading.x - host.x*heading.z;
+						const auto offset = PoolLocal::Rotate({dx,dz},c,s);
+						const auto look = PoolLocal::Rotate({shown.cameraDirection[0],shown.cameraDirection[2]},c,s);
+						shown.cameraPosition[0] = shown.balls[0][0] + offset.x;
+						shown.cameraPosition[2] = shown.balls[0][2] + offset.z;
+						shown.cameraDirection[0] = look.x;
+						shown.cameraDirection[2] = look.z;
+					}
+				}
+				shown.aim[0] = shown.balls[0][0] + heading.x;
+				shown.aim[2] = shown.balls[0][2] + heading.z;
+				cueDistance *= 1.0f + 0.25f*(stroke ? coop.stroke.power : displayed);
+			}
+			if (stroke)
+			{
+				const auto pose = coop.stroke.Advance(dt);
+				const auto ball = following ? coop.stroke.Reconcile({shown.balls[0][0],shown.balls[0][2]}) : pose.ball;
+				shown.balls[0][0] = ball.x;
+				shown.balls[0][2] = ball.z;
+				cueDistance -= m_pCue->m_fCueLength * (0.025f + 0.25f*coop.stroke.power) * pose.followThrough;
+			}
+			else if (coop.stroke.serial && (!localOwner || frame.serial != coop.stroke.serial || (fresh && frame.stage == 2)))
+			{
+				coop.stroke = {};
+				coop.shootSample = 0;
+			}
+			if (!localOwner) { coop.aim = {}; coop.aimSample = 0; }
 			m_oStartHudElement.SetForceHide(TTRUE);
 			m_GUIElement.Show();
 			for ( TINT i = 0; i < NUM_BALLS; ++i )
@@ -393,14 +679,26 @@ TBOOL ABarnYardPoolMiniGameState::OnUpdate( TFLOAT dt )
 			TMatrix44 cue;
 			std::memcpy(&cue,shown.cueMatrix,sizeof(cue));
 			m_pCue->SetVisible(frame.cueVisible != 0);
-			m_pCue->GetModelInstance()->SetTransform(cue);
+			if (localCue)
+			{
+				// The very same model is drawn in both the scene and OnRenderOverlay.
+				const float x = stroke ? coop.stroke.origin.x : shown.balls[0][0];
+				const float z = stroke ? coop.stroke.origin.z : shown.balls[0][2];
+				m_pCue->m_vecDirection.Set(heading.x,0,heading.z,0);
+				m_pCue->m_vecCuePosition.Set(x-heading.x*cueDistance,shown.balls[0][1],z-heading.z*cueDistance,1);
+				m_pCue->GetModelInstance()->SetTransform(m_pCue->m_vecCuePosition,m_pCue->m_vecDirection);
+			}
+			else
+			{
+				m_pCue->GetModelInstance()->SetTransform(cue);
+				m_pCue->m_vecCuePosition = cue.GetTranslation();
+			}
 			m_pCue->GetModelInstance()->SetOpacity(shown.cueOpacity);
-			m_pCue->m_vecCuePosition = cue.GetTranslation();
 			m_vAimTarget.Set(shown.aim[0],shown.aim[1],shown.aim[2],1);
 			m_pAimTarget->SetSteerPosition(m_vAimTarget);
-			m_pAimTarget->SetVisible(frame.aimVisible != 0);
+			m_pAimTarget->SetVisible(frame.aimVisible != 0 && !stroke);
 			m_pAimTarget->GetModelInstance()->SetTransform(m_vAimTarget,TVector4::VEC_POSX);
-			m_eState = STATE(frame.state); // Display phase only; UpdateGame is never called here.
+			m_eState = stroke && aiming ? STATE_HUMAN_SHOT : STATE(frame.state); // Display phase only.
 			m_iCurrentTeam = frame.owner;
 			UpdateAimGuide(dt); // Read-only collision queries for the dotted guide.
 			m_aViews[0].vPosition.Set(shown.cameraPosition[0],shown.cameraPosition[1],shown.cameraPosition[2],1);
@@ -421,7 +719,8 @@ TBOOL ABarnYardPoolMiniGameState::OnUpdate( TFLOAT dt )
 			if ( titleChanged ) m_oHud.SetTitleText(coop.view.title);
 			if ( infoChanged ) m_oHud.SetInfoText(coop.view.info);
 			m_oHud.Update(dt);
-			m_oPowerBar.SetBarVisible(frame.state == STATE_HUMAN_AIM || frame.state == STATE_HUMAN_POWER);
+			m_oPowerBar.SetBarVisible(!stroke && (frame.state == STATE_HUMAN_AIM || frame.state == STATE_HUMAN_POWER));
+			MeasurePoolFeedback();
 			if ( fresh && ACoopMinigame::IsViewLogEnabled() )
 			{
 				TINFO("[pool-pvp] frame apply match=%u sequence=%u serial=%u owner=%u state=%u potted=%u,%u mask=%04x hash=%08x\n",match,sequence,frame.serial,frame.owner,frame.state,frame.potted[0],frame.potted[1],frame.pottedBalls,PoolFrameHash(frame));
@@ -453,21 +752,6 @@ TBOOL ABarnYardPoolMiniGameState::OnUpdate( TFLOAT dt )
 					probe(4,"ball",previous.balls[0],sample);
 				}
 			}
-			const TBOOL canControl = localInput && !ACoopMinigame::BlockInput();
-			if ( canControl )
-			{
-				if ( coop.localSerial != frame.serial ) { coop.localSerial = frame.serial; coop.aimX = coop.aimY = 0; }
-				DevCoopDriver(dt);
-				ACoopMinigame::SubmitPoolInput(frame.serial,coop.aimX,coop.aimY,TFALSE,TFALSE);
-			}
-			else
-			{
-				coop.aimX = coop.aimY = 0;
-				ACoopMinigame::SubmitPoolInput(frame.serial,0,0,TFALSE,TFALSE);
-			}
-			const TBOOL wasConfirmed = coop.charge.confirmed;
-			const TFLOAT displayed = coop.charge.Update(frame,canControl,fresh,dt);
-			using Charge = PoolSpectator::ChargePreview;
 			m_oPowerBar.SetValue(displayed,coop.charge.state != Charge::Idle);
 			if (coop.driver && coop.charge.state != Charge::Idle)
 			{
@@ -493,6 +777,11 @@ TBOOL ABarnYardPoolMiniGameState::OnUpdate( TFLOAT dt )
 			coop.received = TFALSE;
 			coop.motion.sequence = 0;
 			coop.charge = {};
+			coop.aim = {};
+			coop.placement = {};
+			coop.placeRelease = coop.placeHeld = TFALSE;
+			if (coop.stroke.serial) coop.stroke.Advance(dt);
+			coop.aimSample = coop.shootSample = 0;
 			coop.aimX = coop.aimY = 0;
 			ACoopMinigame::SuspendPoolInput();
 		}
@@ -500,9 +789,11 @@ TBOOL ABarnYardPoolMiniGameState::OnUpdate( TFLOAT dt )
 	}
 	DevCoopDriver(dt);
 	const TBOOL result = AMiniGameState::OnUpdate(dt);
+	if (m_bStarted && m_iCurrentTeam == 0) MeasurePoolFeedback();
+	else coop.aimSample = coop.shootSample = 0;
 	PublishCoopState();
 	if ( !m_bStarted ) return result;
-	if ( !CoopMini::ViewSendDue(coop.publishWait,dt) ) return result;
+	if ( !ACoopMinigame::ShouldCaptureSpectatorFrame(this,dt) ) return result;
 	PoolViewFrame frame{};
 	frame.magic = POOL_VIEW_MAGIC; frame.serial = GetCoopShotSerial(); frame.owner = m_iCurrentTeam;
 	frame.state = m_eState; frame.stage = GetCoopInputStage(); frame.winner = m_iWinner;

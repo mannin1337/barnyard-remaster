@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "Debug/AInputLatency.h"
 #include "Player/ACoopMinigame.h"
 #include <Render/TCameraObject.h>
 #include "ATapperMiniGameState.h"
@@ -3100,8 +3101,18 @@ TBOOL ATapperMiniGameState::ProcessCommand( AInputCommand a_eInputCommand, const
 			break;
 	}
 
+	// Compare only the direct command. Replaying the native queue above can also start an animation.
+	const auto previousState = m_ePlayerState;
 	if ( !HandleCommand( a_eInputCommand, a_pInputEvent->GetEventType(), bHandled ) )
 		return AMiniGameState::ProcessCommand( a_eInputCommand, a_pInputEvent, a_rStopEvents );
+
+	if ( a_eInputCommand == AInputCommand_Shoot && m_ePlayerState != previousState )
+	{
+		if ( m_ePlayerState == PLAYERSTATE_FILLING )
+			AInputLatency::Action( AInputLatency::Current(), "barntender", "fill" );
+		else if ( m_ePlayerState == PLAYERSTATE_THROWING )
+			AInputLatency::Action( AInputLatency::Current(), "barntender", "throw" );
+	}
 
 	return TTRUE;
 }

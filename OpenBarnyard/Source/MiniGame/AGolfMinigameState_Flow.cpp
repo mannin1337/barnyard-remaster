@@ -12,6 +12,7 @@
 #include "GUI/AFadeManager.h"
 #include "Locale/ALocaleManager.h"
 #include "Player/ACoopMinigame.h"
+#include "Debug/AInputLatency.h"
 #include "Player/APlayerProfileManager.h"
 #include "Render/ARenderer.h"
 #include "Sound/ASoundManager.h"
@@ -197,7 +198,10 @@ TBOOL AGolfMinigameState::OnUpdate( TFLOAT a_fDeltaTime )
 				Player& rPlayer = GetCurrentPlayer();
 
 				if ( rPlayer.bSwingPressed )
+				{
 					pCameraHelper->SetAnimationSpeed( 4.0f );
+					AInputLatency::Action(m_swingPressSample[m_iCurrentPlayer], "golf", "flyover-speed");
+				}
 				else if ( rPlayer.bSwingReleased )
 					pCameraHelper->SetAnimationSpeed( 1.5f );
 			}
@@ -243,6 +247,7 @@ TBOOL AGolfMinigameState::OnUpdate( TFLOAT a_fDeltaTime )
 			if ( GetCurrentPlayer().bSwingPressed == TTRUE )
 			{
 				pPlayerObject->PlayAnimation( TPS8( golf_swingbk ) );
+				AInputLatency::Action(m_swingPressSample[m_iCurrentPlayer], "golf", "swing-start");
 				m_oSwingListener.Disconnect();
 
 				// Put the ball on the tee

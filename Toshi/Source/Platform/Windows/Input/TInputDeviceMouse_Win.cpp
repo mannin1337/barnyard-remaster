@@ -1,5 +1,6 @@
 #include "ToshiPCH.h"
 #include "TInputDeviceMouse_Win.h"
+#include "TRawMousePump_Win.h"
 #include "Render/TBackend.h"
 #include "Platform/Windows/Input/TInputInterface_Win.h"
 
@@ -93,6 +94,13 @@ void TInputDXDeviceMouse::AccumulateRawMotion( TINT a_iDX, TINT a_iDY )
 	TMath::Clip( iY, TINT64( -2147483647 ), TINT64( 2147483647 ) );
 	m_iRawDeltaX = TINT( iX );
 	m_iRawDeltaY = TINT( iY );
+}
+
+void TInputDXDeviceMouse::PumpRawInputForFrame()
+{
+	if ( ms_bRawInputEnabled && m_bRawInputRegistered && !m_bRawBackground &&
+	     IsAcquired() && GetForegroundWindow() == m_hMainWindow )
+		TRawMousePump::BeforeInput( m_hMainWindow );
 }
 
 void TInputDXDeviceMouse::HandleRawInput( HWND a_hWindow, WPARAM a_wParam, LPARAM a_lParam )

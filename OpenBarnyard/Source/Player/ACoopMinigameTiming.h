@@ -2,11 +2,10 @@
 
 namespace CoopMini
 {
-// Keep fractional frame time: resetting a 50 ms timer loses its remainder and
-// falls to 15 snapshots/s on a 30 fps host. Never send a burst after a stall.
-inline bool ViewSendDue(float& remaining, float elapsed)
+// Keep fractional frame time at mixed frame rates. After a stall only the
+// latest pose is useful; sending missed poses back-to-back adds queueing.
+inline bool ViewSendDue(float& remaining, float elapsed, float interval = 1.0f / 30.0f)
 {
-    constexpr float interval = 1.0f / 30.0f;
     remaining -= elapsed > 0.0f ? elapsed : 0.0f;
     if (remaining > 0.000001f) return false;
     remaining += interval;

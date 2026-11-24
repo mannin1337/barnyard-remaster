@@ -6,11 +6,13 @@
 #include "GUI/AGUI2.h"
 #include "AOptions.h"
 #include "Debug/APrimeDebug.h"
+#include "Debug/AInputLatency.h"
 
 #include <Input/TInputInterface.h>
 
 #ifdef BARNYARD_COMMUNITY_PATCH
 #  include "Player/ACoop.h"
+#  include "Player/ACoopMinigame.h"
 #endif
 
 #ifdef TOSHI_SKU_WINDOWS
@@ -157,6 +159,10 @@ TBOOL AInputHandler::OnUpdate( TFLOAT a_fDeltaTime )
 
 	TInputInterface::GetSingleton()->AcquireAll();
 #ifdef BARNYARD_COMMUNITY_PATCH
+#  ifdef TOSHI_SKU_WINDOWS
+	if ( !m_bIsPaused && m_pMouseDevice && ACoopMinigame::IsPlaying() )
+		TSTATICCAST( TInputDXDeviceMouse, m_pMouseDevice )->PumpRawInputForFrame();
+#  endif
 	// Also covers opening co-op after an already-connected device was discovered.
 	ACoop::FindSecondPlayerController();
 	// A menu pad can become P2 when starting keyboard-plus-pad co-op.
@@ -419,6 +425,7 @@ TBOOL AInputHandler::ProcessInputEvent( Toshi::TInputInterface* a_pInputInterfac
 #endif // BARNYARD_COMMUNITY_PATCH
 
 	// NOTE: the original first calls 006ce000 (RETURNS_FALSE stub) with the event
+	AInputLatency::Dispatch sample( *a_pEvent );
 	if ( AGameStateController::GetSingleton()->ProcessInput( a_pEvent ) ||
 	     ( ARootTask::GetSingleton()->IsGameSystemCreated() == TTRUE && AControlComponentManager::GetSingleton()->ProcessInput( a_pEvent ) ) )
 	{

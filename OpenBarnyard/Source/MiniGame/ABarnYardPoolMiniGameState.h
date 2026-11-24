@@ -1,5 +1,6 @@
 #pragma once
 #include "AMiniGameState.h"
+#include "Player/ACoopMinigame.h"
 #include "ABarnYardPoolAI.h"
 #include "HUD/ABarnYardPoolHud.h"
 #include "HUD/AGUI2NewPoolPower.h"
@@ -243,8 +244,14 @@ private:
 	TUINT GetCoopShotSerial() const;
 	TUINT GetCoopInputStage() const;
 	TBOOL ProcessCoopCommand( AInputCommand a_eCommand, const Toshi::TInputInterface::InputEvent* a_pEvent, TBOOL& a_rStopEvents );
-	void UpdateCoopInput();
-	void ApplyCoopInput( TFLOAT a_fX, TFLOAT a_fY, TBOOL a_bPressed, TBOOL a_bReleased );
+	void UpdateCoopInput( TFLOAT dt );
+	void UpdateCoopAim( TFLOAT dt );
+	void ApplyCoopInput( const ACoopMinigame::PoolInput& input, TFLOAT dt );
+	Toshi::TVector4 UpdateCoopPlacement( TUINT serial, const Toshi::TVector4& ball,
+	    const Toshi::TVector4& camera, TFLOAT x, TFLOAT y, TFLOAT dt );
+	void SubmitLocalPoolInput( TBOOL down, TBOOL up, TUINT sample );
+	void TrackPoolInput( TUINT sample, TBOOL release, TBOOL placement = TFALSE );
+	void MeasurePoolFeedback();
 	void PublishCoopState();
 	void ResetCoopState();
 	void DevCoopDriver( TFLOAT a_fDeltaTime );

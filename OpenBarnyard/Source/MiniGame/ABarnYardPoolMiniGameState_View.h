@@ -2,6 +2,7 @@
 
 #include <Math/TMatrix44.h>
 #include "../Units/AUnitPoolCuePower.h"
+#include "APoolLocalShot.h"
 #include <cmath>
 #include <cstring>
 
@@ -25,25 +26,27 @@ struct ChargePreview
 	TFLOAT power = 0, age = 0, releaseAge = 0, lead = 0, lastHostPower = 0, correction = 0;
 	bool decreasing = false, hostDecreasing = false, confirmed = false;
 
-	void Edge(TUINT shot, TUINT stage, TUINT sequence, bool down, bool up)
+	PoolLocal::ShootEdge Edge(TUINT shot, TUINT stage, TUINT sequence, bool down, bool up)
 	{
-		// Stage 1 Shoot confirms ball placement and has no power meter.
-		if (down && stage == 2 && state == Idle)
+		using Edge = PoolLocal::ShootEdge;
+		const auto accepted = PoolLocal::GetShootEdge(stage,state == Idle,state == Held && serial == shot,down,up);
+		if (accepted == Edge::Press || accepted == Edge::Tap)
 		{
 			*this = {};
 			state = Held;
 			serial = shot;
 			pressSequence = sequence;
 		}
-		if (up && state == Held && serial == shot)
+		if (accepted == Edge::Release || accepted == Edge::Tap)
 		{
 			state = Released;
 			releaseAge = age;
 			releaseSequence = sequence;
 		}
+		return accepted;
 	}
 
-	TFLOAT Update(const PoolViewFrame& frame, bool local, bool fresh, TFLOAT dt)
+	TFLOAT Update(const PoolViewFrame& frame, bool local, bool fresh, TFLOAT dt, bool commitLocalPower = false)
 	{
 		if (state == Idle) return frame.power;
 		age += dt;
@@ -68,7 +71,7 @@ struct ChargePreview
 			}
 			else if (frame.power != lastHostPower) hostDecreasing = frame.power < lastHostPower;
 			lastHostPower = frame.power;
-			if (state == Held)
+			if (state == Held && !commitLocalPower)
 			{
 				TFLOAT target = frame.power * maximum;
 				bool down = frame.power >= 1.0f || (hostDecreasing && target > 0.01f);
@@ -147,8 +150,8 @@ struct Motion
 			const bool cut = !sequence || session != match || gap > 0.2f ||
 			    shown.serial != target.serial || shown.owner != target.owner || shown.state != target.state;
 			start = shown;
-			// Cover a whole 30 Hz sample interval, including render quantisation.
-			duration = cut ? 0.0f : Toshi::TMath::Min(Toshi::TMath::Max(gap, 1.0f / 30.0f),
+			// Use the observed sample interval for both 30 and 60 Hz peers.
+			duration = cut ? 0.0f : Toshi::TMath::Min(Toshi::TMath::Max(gap, 1.0f / 60.0f),
 			    localInput ? 0.06f : 0.08f) + dt;
 			elapsed = gap = 0.0f;
 			sequence = id;

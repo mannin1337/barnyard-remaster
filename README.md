@@ -59,7 +59,7 @@ All 14 activities below are playable solo in the original PC game. For this rema
 | Play the same challenge on each computer and compare scores | **Tease the Mailman**, **Tease Mrs Beady**, **Chasing Chicks**, **Veggie Patch Defender**, **Cow Tipping**, **Milk Bar** |
 | Race on each computer and compare finish times | **Bike Race**, **Joy Ride** |
 
-When you play as the guest, you can lock both Darts aim bars, start a Pool shot or jump in Mud Jumpers while your input is still travelling to the host. The host settles shared hits and scores. [Input timing and LAN playtest results](docs/multiplayer-testing.md#lan-input-timing-in-v55-lan5)
+Both screens show each player's saved cow in Mud Jumpers, including its breed and markings. When you play as the guest, you can lock both Darts aim bars, start a Pool shot or jump in Mud Jumpers while your input is still travelling to the host. The host settles shared hits and scores. [Character and scoreboard checks](docs/multiplayer-testing.md#character-and-scoreboard-checks-in-v55-lan6) · [Input timing across all 14 games](docs/multiplayer-testing.md#lan-input-timing-in-v55-lan5)
 
 ### Minigame gallery
 
@@ -71,7 +71,7 @@ Select a screenshot to open the full 1920 × 1080 frame from Bimbo and Gyurcsany
 
 | Gopher Golf | Mud Jumpers |
 | --- | --- |
-| [![Gyurcsany watches Bimbo's gopher surface beside the golf ball.](docs/images/minigames/previews/gopher-golf.webp)](docs/images/gopher-golf.png)<br>Tee off, then steer your gopher underground to retrieve the ball. | [![Gyurcsany's view of Bimbo lifting a hoof to kick the pipe across the muddy arena.](docs/images/minigames/previews/mud-jumpers.webp)](docs/images/minigames/mud-jumpers.webp)<br>Jump the pipe or kick it back at your friend and the two computer-controlled cows. |
+| [![Gyurcsany watches Bimbo's gopher surface beside the golf ball.](docs/images/minigames/previews/gopher-golf.webp)](docs/images/gopher-golf.png)<br>Tee off, then steer your gopher underground to retrieve the ball. | [![Bimbo jumps from a wooden platform as the rotating pipe sweeps towards Gyurcsany's grey Angus cow across the mud pit.](docs/images/minigames/previews/mud-jumpers.webp)](docs/images/minigames/mud-jumpers.webp)<br>Jump the pipe or kick it back at your friend and the two computer-controlled cows. |
 
 | Darts | Barnyard Pool |
 | --- | --- |
@@ -83,7 +83,7 @@ Select a screenshot to open the full 1920 × 1080 frame from Bimbo and Gyurcsany
 
 | Chasing Chicks | Veggie Patch Defender |
 | --- | --- |
-| [![Two cows cross paths near the red barn as yellow chicks scatter along the farmyard trail.](docs/images/minigames/previews/chasing-chicks.webp)](docs/images/minigames/chasing-chicks.webp)<br>Stand in a scoring ring and toss a chick back into the coop. | [![A cow fires a jet of milk between vegetable rows beside a pumpkin-headed scarecrow.](docs/images/minigames/previews/vegetable-patch-defender.webp)](docs/images/minigames/vegetable-patch-defender.webp)<br>Squirt the raiding raccoons and throw them out before they steal the vegetables. |
+| [![A yellow chick flies up in front of Gyurcsany as feathers scatter beside a watching hen.](docs/images/minigames/previews/chasing-chicks.webp)](docs/images/minigames/chasing-chicks.webp)<br>Stand in a scoring ring and toss a chick back into the coop. | [![Bimbo runs out of milk as a raccoon dashes between the vegetable rows beside a pumpkin-headed scarecrow.](docs/images/minigames/previews/vegetable-patch-defender.webp)](docs/images/minigames/vegetable-patch-defender.webp)<br>Squirt the raiding raccoons and throw them out before they steal the vegetables. |
 
 | Bike Race | Joy Ride |
 | --- | --- |

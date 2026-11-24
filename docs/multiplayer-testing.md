@@ -1,5 +1,19 @@
 # Multiplayer playtest results
 
+## Character and scoreboard checks in v5.5-lan.6
+
+We loaded two existing save files on separate Windows DX11 game instances. Bimbo's cow was a female Holstein and Gyurcsany's was a male Angus. Both games used the English interface, optional HD textures and the maximum detail and shadow settings at 1920 × 1080. These tests ran on one Windows PC. A physical Linux host and Windows guest remain a separate test.
+
+In Mud Jumpers we compared the two screens at the same **Ready** pose, before either player pressed a button. The female Holstein kept her black-and-white coat on both screens. The male Angus had the same grey coat, pink muzzle and udder, and dark hooves. We compared four patches on that cow's head, torso, udder and hooves. All **3,660 pixels** matched exactly between host and guest. Two nearby samples from the barn and platform also matched. An earlier build still showed a flat green-purple Angus from the host's camera at this point.
+
+Both screens reported **20001–2** at the end of this match, then both players returned to their farms. All 14 measured host actions and 11 guest actions reached render submission in the same game update that dispatched the input. The longest dispatch-to-submission intervals were 0.911 ms on the host and 1.419 ms on the guest. These measurements end at the renderer, before the picture reaches the physical display.
+
+We swapped which save hosted, then tried a male Holstein and male Angus together. The two bulls shared a character model and kept their distinct coats on both screens. In that last run each instance added 150 ms of network delay, up to 35 ms of jitter and 3% packet loss. The host and guest logged 58 and 79 dropped datagrams respectively. All 24 measured local actions in that run reached render submission in their input frame. Across the three Mud Jumpers runs, **71 of 71** measured actions did so.
+
+We also played **Chasing Chicks** and **Veggie Patch Defender** through to their results. On each screen, Bimbo and Gyurcsany's names and scores were readable throughout the captured action. Both players saw **0–0** in Chasing Chicks and **160–140** in Veggie Patch Defender. Each game returned both players to their saved farms. [Full-size minigame screenshots](../README.md#minigame-gallery)
+
+All **13** Win32 Release regression tests passed, including the two new tests for cow appearance and the LAN scoreboard. The appearance test covers both player slots, all seven breeds for each sex, a late appearance update, two cows sharing a model and the original AI character slots. The scoreboard test covers the first frame of a match, returning to the farm and screens that hide the scoreboard. [Tested engine source](https://github.com/mannin1337/barnyard-remaster/commit/a14f73b659d83b825fa7ce35a050feb48640b7bd)
+
 ## LAN input timing in v5.5-lan.5
 
 The gameplay test runs a host and a guest as two muted Win32 DX11 processes on one Windows PC. Both run at idle priority in background mode, which presents frames without waiting for VSync. The test sends scripted inputs through the game's regular input mapping. Each process records when it dispatches an input, when the minigame applies the first matching action, and when the renderer reaches its next frame submission point. A difference of zero frames means all three events took place in the same game update. The measurement starts after device polling and ends before desktop composition and display scan-out. The spectator receives the other player's actions after the packets cross the link. Timing a SteamOS host and a separate Windows guest on physical hardware remains open for this release. [Record input timings on your own setup](../Tools/tests/netplay/README.md#test-coverage)
@@ -60,7 +74,7 @@ In a second full Darts match the players finished at **35–0** after three roun
 
 ### Mud Jumpers character appearance
 
-In a later gallery session, Bimbo hosted as a female Holstein and Gyurcsany joined as a male Angus. On the host, Bimbo's cow appeared solid purple. The guest showed a different cow model with a textured coat in Bimbo's place. The mismatch was visible in all three pairs of frames, taken at 37, 43 and 49 seconds. The Mud Jumpers screenshot in the gallery shows the guest's view. [Minigame gallery](../README.md#minigame-gallery)
+In a later v5.5-lan.5 gallery session, Bimbo hosted as a female Holstein and Gyurcsany joined as a male Angus. On the host, Bimbo's cow appeared solid purple. The guest showed a different cow model with a textured coat in Bimbo's place. The mismatch was visible in all three pairs of frames, taken at 37, 43 and 49 seconds. The original gallery used the guest's view. [Gallery from that session](https://github.com/mannin1337/barnyard-remaster/blob/e66b6d08d939ddac7b70d00ee07785b92ba4e526/README.md#minigame-gallery)
 
 ## Co-op names in v5.5-lan.4
 

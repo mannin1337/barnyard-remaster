@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ACoopPartner.h"
 #include "ACoop.h"
+#include "ACoopMinigame.h"
 #include "ACoopNet.h"
 #include "ACoopAnim.h"
 #include "APlayerProfileManager.h"
@@ -17,6 +18,7 @@
 #include "Locale/ALocaleManager.h"
 #include "Locale/AModStrings.h"
 #include "MiniGame/AMiniGameManager.h"
+#include "MiniGame/ACoopMinigameHudStatus.h"
 #include "Cameras/ACameraManager.h"
 #include "Render/ARenderer.h"
 #include "Tasks/ARootTask.h"
@@ -656,7 +658,7 @@ void ACoopPartnerHud::Update( TFLOAT a_fDeltaTime )
 
 	// The line fades in and out
 	const TBOOL bStatus = bSession && s_wszStatus[ 0 ] != L'\0';
-	m_fStatusAlpha      = TMath::Max( TMath::Min( m_fStatusAlpha + ( bStatus ? 4.0f : -4.0f ) * a_fDeltaTime, 1.0f ), 0.0f );
+	m_fStatusAlpha = CoopMiniHud::PartnerStatusAlpha( m_fStatusAlpha, a_fDeltaTime, bStatus, ACoopMinigame::ShowsHudStatus() );
 
 	if ( m_fStatusAlpha > 0.0f )
 	{

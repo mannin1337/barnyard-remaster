@@ -456,7 +456,7 @@ TBOOL ASkinShaderHAL::TryValidate()
 void ASkinShaderHAL::RenderShadowCaster( Toshi::TRenderPacket* a_pRenderPacket )
 {
 	auto pMesh             = TSTATICCAST( ASkinMeshHAL, a_pRenderPacket->GetMesh() );
-	auto pMaterial         = TSTATICCAST( ASkinMaterialHAL, pMesh->GetMaterial() );
+	auto pMaterial         = TSTATICCAST( ASkinMaterialHAL, a_pRenderPacket->GetMaterial() );
 	auto pSkeletonInstance = a_pRenderPacket->GetSkeletonInstance();
 
 	if ( !m_oDepthShaders.pVertexShader || !pMaterial || !pSkeletonInstance || pMesh->GetNumSubMeshes() == 0 )
@@ -542,7 +542,8 @@ void ASkinShaderHAL::Render( Toshi::TRenderPacket* a_pRenderPacket )
 #endif // BARNYARD_COMMUNITY_PATCH
 
 	auto pMesh     = TSTATICCAST( ASkinMeshHAL, a_pRenderPacket->GetMesh() );
-	auto pMaterial = TSTATICCAST( ASkinMaterialHAL, pMesh->GetMaterial() );
+	// Another instance may already have restored or replaced this shared mesh's hide.
+	auto pMaterial = TSTATICCAST( ASkinMaterialHAL, a_pRenderPacket->GetMaterial() );
 
 	if ( pMesh->GetNumSubMeshes() == 0 ) return;
 

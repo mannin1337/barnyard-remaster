@@ -2,6 +2,7 @@
 #include "Player/ACoopMinigame.h"
 #include "Player/ACoopPartner.h"
 #include "AGateCrashLocalInput.h"
+#include "AGateCrashAvatar.h"
 #include "AGateCrashMinigameState.h"
 #include "Debug/AInputLatency.h"
 #include "Sound/APositionalSoundSet.h"
@@ -25,6 +26,9 @@
 #include "Player/APlayerManager.h"
 #include "Player/APlayerSet.h"
 #include "Player/APlayerProfileManager.h"
+#include "Player/ASkins.h"
+#include "Assets/AAssetLoader.h"
+#include "Assets/AKeyFrameLibraryManager.h"
 #include "Render/AShadowManager.h"
 #include "Sound/ASoundManager.h"
 #include "FX/AParticleEffectManager.h"
@@ -130,12 +134,65 @@ struct MudPvpRun
 	TUINT jumpTrace, kickTrace;
 	TFLOAT remoteActionTime;
 	TBOOL completed;
+	MudAvatar::Appearance avatars[2];
+	MudAvatar::Appearance lastRemote{-1, -1}; // retained across a temporary loss, reset on the next match
+	AAnimatableObjectType* cowTypes[2];
+	TBOOL ownsType[2], ownsKeylib[2];
 	MudGuest::View view;
 	MudGuest::LocalInput localView;
 	TUINT renderTicks, repeatTicks, gateSteps, playerSteps;
 	double nextViewLog;
 };
 MudPvpRun s_mudPvp{};
+
+// lib_mudjump normally loads just the saved player's gender. The other
+// gender uses the same native arena animations and breakpoints.
+constexpr const char* s_mudCowTypes[] = { "american_m_mudjump", "american_f_mudjump" };
+constexpr const char* s_mudCowKeylibs[] = { "mj_americanm", "mj_americanf" };
+
+void LoadMudCowModels()
+{
+	auto* manager = AAnimatableObjectManager::GetSingleton();
+	for ( TINT gender = 0; gender < 2; ++gender )
+	{
+		const TPString8 typeName( s_mudCowTypes[gender] );
+		auto* type = manager->FindType( typeName );
+		if ( !type )
+		{
+			s_mudPvp.ownsKeylib[gender] = AKeyFrameLibraryManager::GetSingleton()->LoadLibrary(
+			    TPString8( s_mudCowKeylibs[gender] ), AAssetLoader::GetAssetTRB( AAssetType_AssetPack ) );
+			if ( !s_mudPvp.ownsKeylib[gender] ) continue;
+			manager->LoadAnimObjType( typeName, TNULL, TFALSE );
+			type = manager->FindType( typeName );
+			s_mudPvp.ownsType[gender] = type != TNULL;
+		}
+		if ( type && type->GetModel() ) s_mudPvp.cowTypes[gender] = type;
+	}
+}
+
+void ReadMudAvatars( MudAvatar::Appearance (&result)[2] )
+{
+	auto* profile = APlayerProfileManager::GetSingleton()->GetMainProfile();
+	const MudAvatar::Appearance local{profile->GetGender(), profile->GetCostume()};
+	auto& remote = s_mudPvp.lastRemote;
+	ASkins::GetRemoteCowAppearance( remote.model, remote.breed );
+	for ( TINT i = 0; i < 2; ++i )
+	{
+		result[i] = MudAvatar::Select( i, ACoopMinigame::GetRealtimeMudLocalPlayer(), local, remote );
+		if ( !s_mudPvp.cowTypes[result[i].model] )
+		{
+			const TINT other = 1 - result[i].model;
+			result[i] = s_mudPvp.cowTypes[other] ? MudAvatar::Appearance{other, 0} : MudAvatar::Appearance{2, -1};
+		}
+	}
+}
+
+void AddMudShadow( AAnimatedUnit* unit )
+{
+	AModelInstanceRef instance = unit->GetAnimatableObject()->GetModelInstance();
+	const TINT bone = instance->GetSkeletonInstance()->GetBoneID( "C" );
+	AShadowManager::GetSingleton()->AddUnitShadow( unit, 1.25f, bone, -0.1f, AShadowManager::FLAGS_UNIFORM_SCALE, AShadowManager::TYPE_DEFAULT );
+}
 
 TINT MudPvpScore( TINT survived, TINT nativeScore )
 {
@@ -181,11 +238,78 @@ TBOOL ValidMudFrame( const MudSpectatorFrame& frame )
 }
 }
 
+void AGateCrashMinigameState::RefreshMudAvatars()
+{
+	MudAvatar::Appearance wanted[2];
+	ReadMudAvatars( wanted );
+	for ( TINT i = 0; i < 2; ++i )
+	{
+		PlayerSlot& slot = m_oGame.aSlots[i];
+		const TBOOL guest = !ACoopMinigame::IsRealtimeMudHost();
+		const TBOOL canReplace = guest || ( slot.eState == PLAYERSTATE_READY || slot.eState == PLAYERSTATE_OUT );
+		const TBOOL serving = !guest && m_oGame.iServingPlayer == i && m_oServeListener.IsLinked();
+		const auto change = MudAvatar::NextChange( s_mudPvp.avatars[i], wanted[i], canReplace && !serving );
+		if ( change == MudAvatar::Change::None || change == MudAvatar::Change::Wait ) continue;
+		auto* unit = TSTATICCAST( AAnimatedUnit, slot.GetUnit() );
+		if ( !unit ) continue;
+		if ( change == MudAvatar::Change::Model )
+		{
+			auto* type = s_mudPvp.cowTypes[wanted[i].model];
+			auto* object = AAnimatableObjectManager::GetSingleton()->CreateAnimatableObject( type, unit, 0 );
+			auto* old = unit->GetAnimatableObject();
+			const TBOOL visible = unit->IsVisible();
+			TMatrix44 transform;
+			old->GetModelInstance()->GetLocalTransform( transform );
+			object->GetModelInstance()->SetTransform( transform );
+			auto* scene = object->GetModelInstance()->GetSceneObject();
+			auto* oldScene = old->GetModelInstance()->GetSceneObject();
+			scene->GetFadeDistances() = oldScene->GetFadeDistances();
+			scene->GetFadeParams() = oldScene->GetFadeParams();
+			scene->DisableOpacity();
+
+			// Keep the unit, native physics, HUD target and its current animation phase.
+			// A serve in progress owns a breakpoint on the old object until it finishes.
+			const TPString8* pose = &TPS8( idle_lp );
+			for ( const auto* anim : s_mudVisualAnims )
+				if ( old->IsAnimPlaying( *anim, 0.0f ) ) pose = anim;
+			const TFLOAT progress = old->GetAnimationProgress( *pose );
+			object->PlayAnimation( *pose );
+			object->SetAnimationTime( *pose, progress * object->GetAnimationDuration( *pose ) );
+			ASkins::DropMudHide( i );
+			if ( i == 0 ) m_oImpactListeners.FreeAll();
+			AShadowManager::GetSingleton()->RemoveShadow( unit );
+			unit->ConnectModelInstance( object->GetModelInstance() );
+			unit->ReplaceAnimatableObject( object );
+			unit->UpdateBoundingSphere();
+			unit->SetVisible( visible );
+			AddMudShadow( unit );
+			if ( i == 0 ) BindImpactListeners();
+		}
+		s_mudPvp.avatars[i] = wanted[i];
+		ASkins::ApplyMudHide( i, unit, wanted[i].model, wanted[i].breed );
+	}
+}
+
+void AGateCrashMinigameState::BindImpactListeners()
+{
+	AAnimatableObject* object = TSTATICCAST( AAnimatedUnit, m_oGame.aSlots[0].GetUnit() )->GetAnimatableObject();
+	const TPString8* const animations[] = { &TPS8( ms_impact_l ), &TPS8( ms_impact_r ) };
+	for ( const auto* animation : animations )
+	{
+		auto* breakpoint = object->GetAnimationEmitter( *animation );
+		if ( !breakpoint ) continue;
+		auto* listener = new ImpactListener;
+		listener->pEmitter = &breakpoint->GetEmitter();
+		listener->oListener.Connect( breakpoint->GetEmitter(), m_oImpactListeners.pCaller, m_oImpactListeners.fnCallback, 0 );
+		m_oImpactListeners.oList.InsertTail( listener );
+	}
+}
+
 // Spectating never runs native AI, collision, timer, score or life updates.
-// On the next local turn the original slot positions/lives are still intact.
 TBOOL AGateCrashMinigameState::OnUpdate( TFLOAT dt )
 {
 	const TBOOL realtime = ACoopMinigame::IsRealtimeMud( this );
+	if ( realtime && s_mudPvp.owner == this ) RefreshMudAvatars();
 	static TUINT nameRevision = 0;
 	if ( realtime && ACoopMinigame::PlayerNamesChanged(nameRevision) )
 		for ( TINT i = 0; i < 2; ++i ) m_aPlayerFloats[i].SetDisplayName(ACoopPartner::GetPlayerName(i));
@@ -598,6 +722,8 @@ void AGateCrashMinigameState::OnInsertion()
 	{
 		s_mudPvp = {};
 		s_mudPvp.owner = this;
+		LoadMudCowModels();
+		ReadMudAvatars( s_mudPvp.avatars );
 		for ( TINT i = 0; i < MAX_PLAYERS; ++i )
 			s_mudPvp.publishedLives[i] = s_mudPvp.appliedLives[i] = -1;
 		// Bind below to the actual arena units, not the player-set's story cows.
@@ -666,10 +792,13 @@ void AGateCrashMinigameState::OnInsertion()
 		APlayerSimProfile* pProfile = TNULL;
 		TINT               iCharacter;
 
-		if ( i == 0 )
+		if ( realtime && i < 2 )
+		{
+			iCharacter = s_mudPvp.avatars[i].model;
+		}
+		else if ( i == 0 )
 		{
 			pProfile   = APlayerProfileManager::GetSingleton()->GetMainProfile();
-			// lib_mudjump loads only the local profile's cow model on each machine.
 			iCharacter = pProfile->GetGender();
 
 			if ( iCharacter == APlayerProfile::GENDER_NONE )
@@ -683,7 +812,9 @@ void AGateCrashMinigameState::OnInsertion()
 		AUnitTransform oTransform( TVector4::VEC_ZERO, TVector4::VEC_POSX, 0, iCharacter, i, TTRUE );
 		AAnimatedUnit* pUnit = TSTATICCAST( AAnimatedUnit, AUnitManager::GetSingleton()->SpawnUnit( TPS8( player_mudjump ), &oTransform ) );
 
-		if ( i == 0 && !realtime )
+		if ( realtime && i < 2 )
+			ASkins::ApplyMudHide( i, pUnit, iCharacter, s_mudPvp.avatars[i].breed );
+		else if ( i == 0 )
 			pUnit->ApplyMaterial( pProfile->GetCostume(), TTRUE );
 
 		rSlot.pUnitProxy = pUnit->GetSelfProxy();
@@ -728,10 +859,7 @@ void AGateCrashMinigameState::OnInsertion()
 
 		// Replace the default shadow with one that follows the C bone
 		AShadowManager::GetSingleton()->RemoveShadow( pUnit );
-
-		AModelInstanceRef pModelInstance = pUnit->GetAnimatableObject()->GetModelInstance();
-		TINT              iShadowBone    = pModelInstance->GetSkeletonInstance()->GetBoneID( "C" );
-		AShadowManager::GetSingleton()->AddUnitShadow( pUnit, 1.25f, iShadowBone, -0.1f, AShadowManager::FLAGS_UNIFORM_SCALE, AShadowManager::TYPE_DEFAULT );
+		AddMudShadow( pUnit );
 
 		T2GUIATTACHMENT eAttachment;
 		switch ( i )
@@ -779,25 +907,7 @@ void AGateCrashMinigameState::OnInsertion()
 	}
 
 	// Listen to the impact events of the first player's animations (rumble)
-	AAnimatableObject* pFirstPlayerObject = TSTATICCAST( AAnimatedUnit, m_oGame.aSlots[ 0 ].GetUnit() )->GetAnimatableObject();
-	const TPString8*   apImpactAnims[]    = { &TPS8( ms_impact_l ), &TPS8( ms_impact_r ) };
-
-	for ( TINT i = 0; i < TARRAYSIZE( apImpactAnims ); i++ )
-	{
-		AAnimationBreakpointCallback* pBreakpoint = pFirstPlayerObject->GetAnimationEmitter( *apImpactAnims[ i ] );
-		ImpactListener*               pListener   = new ImpactListener;
-
-#ifdef BARNYARD_COMMUNITY_PATCH
-		// NOTE: retail doesn't check if the animation has the breakpoint
-		if ( pBreakpoint )
-#endif
-		{
-			pListener->pEmitter = &pBreakpoint->GetEmitter();
-			pListener->oListener.Connect( pBreakpoint->GetEmitter(), m_oImpactListeners.pCaller, m_oImpactListeners.fnCallback, 0 );
-		}
-
-		m_oImpactListeners.oList.InsertTail( pListener );
-	}
+	BindImpactListeners();
 
 	m_oGame.iServingPlayer = 0;
 	m_oGame.fGateAngle     = m_oGame.aSlots[ 0 ].fAngle;
@@ -904,6 +1014,7 @@ void AGateCrashMinigameState::OnRemoval()
 	{
 		AUnit* pUnit = m_oGame.aSlots[ i ].GetUnit();
 
+		if ( s_mudPvp.owner == this && i < 2 ) ASkins::DropMudHide( i );
 		if ( pUnit )
 			AUnitManager::GetSingleton()->DestroyUnit( pUnit );
 	}
@@ -942,6 +1053,15 @@ void AGateCrashMinigameState::OnRemoval()
 
 	AUnitManager::GetSingleton()->DeleteDyingUnits();
 
+	if ( s_mudPvp.owner == this )
+	{
+		for ( TINT gender = 0; gender < 2; ++gender )
+		{
+			if ( s_mudPvp.ownsType[gender] ) pAnimObjManager->DestroyType( s_mudCowTypes[gender] );
+			if ( s_mudPvp.ownsKeylib[gender] ) AKeyFrameLibraryManager::GetSingleton()->UnrefLibrary( TPString8( s_mudCowKeylibs[gender] ) );
+		}
+		ASkins::ReleaseMudHides();
+	}
 	TRenderInterface::GetSingleton()->FlushDyingResources();
 	AMiniGameState::OnRemoval();
 	if ( s_mudPvp.owner == this ) s_mudPvp = {};
@@ -1333,6 +1453,7 @@ void AGateCrashMinigameState::UpdateGame( TFLOAT a_fDeltaTime )
 				if ( ( k != 1 || i != 0 ) && k != i )
 				{
 					TINT iCue = ( k == 0 ) ? ( APlayerProfileManager::GetSingleton()->GetMainProfile()->GetGender() == 1 ) : k + 1;
+					if ( realtime && k < 2 ) iCue = s_mudPvp.avatars[k].model;
 					ASoundManager::GetSingleton()->PlayCueAtPosition( KO_CUES[ iCue ], m_oGame.aSlots[ k ].vPosition );
 				}
 			}

@@ -45,6 +45,8 @@ TBOOL ASkinMeshHAL::Render()
 		}
 
 		auto pRenderPacket = pMaterial->AddRenderPacket( this );
+		// A fading instance can submit its alpha material instead of the mesh's material.
+		pRenderPacket->SetMaterial( pMaterial );
 		pRenderPacket->SetModelViewMatrix( pCurrentContext->GetModelViewMatrix() );
 		pRenderPacket->SetSkeletonInstance( pSkeletonInstance );
 		pRenderPacket->SetAmbientColour( pCurrentContext->GetAmbientColour().AsVector3() );

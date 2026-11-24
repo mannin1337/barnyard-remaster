@@ -101,6 +101,14 @@ public:
 	static void OnMainGameAssetsLoaded( const PBPropertyValue* a_pPlayerCharacter, Toshi::TTRB* a_pTRB );
 	static void OnMainGameAssetsUnloaded();
 
+	// The existing BYS1 channel advertises the saved cow behind any farm-only puppet.
+	static TBOOL GetRemoteCowAppearance( TINT& a_rGender, TINT& a_rBreed );
+
+	// Mud's two human units each draw their own hide, even when they share a model.
+	static TBOOL ApplyMudHide( TINT a_iSlot, AUnit* a_pUnit, TINT a_iGender, TINT a_iBreed );
+	static void  DropMudHide( TINT a_iSlot );
+	static void  ReleaseMudHides();
+
 	// ACoopNet::SpawnRemoteUnit: the model index of the "player" unit to spawn for the remote cow (the one of the
 	// remote player's gender if its models can be loaded, the local player's otherwise)
 	static TINT GetRemoteModelIndex();

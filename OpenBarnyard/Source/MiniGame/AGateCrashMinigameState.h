@@ -198,6 +198,8 @@ public:
 
 protected:
 	TINT GetCoopScore( TINT a_iPlayer ) const;
+	void RefreshMudAvatars();
+	void BindImpactListeners();
 
 	GameData                m_oGame;                          // 0x0bac
 	AAnimatableObject*      m_apSpectators[ NUM_SPECTATORS ]; // 0x0c88

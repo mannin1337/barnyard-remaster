@@ -13,6 +13,7 @@
 #include "GameInterface/AMessagePopupState.h"
 #include "MiniGame/AMiniGameManager.h"
 #include "MiniGame/AMiniGameState.h"
+#include "MiniGame/ACoopMinigameHudStatus.h"
 #include "MiniGame/ACoopMinigameHudText.h"
 #include "MiniGame/ABarnExploreMinigameState.h"
 #include "Input/AInputHandler.h"
@@ -455,7 +456,7 @@ public:
     virtual void Hide() override { m_bCurrentlyVisible = TFALSE; m_text.Hide(); }
     virtual void Update(TFLOAT) override
     {
-        if (s_state.phase == Idle || !s_hudText[0]) { m_text.Hide(); return; }
+        if (!ACoopMinigame::ShowsHudStatus()) { m_text.Hide(); return; }
         if (m_textVersion != s_hudTextVersion)
         {
             m_text.SetText(s_hudText);
@@ -1004,6 +1005,13 @@ TBOOL ACoopMinigame::CanInvite()
 TBOOL ACoopMinigame::IsPlaying()
 {
     return s_state.phase >= CoopMini::Loading && s_nativeMatch.loaded == s_state.match;
+}
+TBOOL ACoopMinigame::ShowsHudStatus()
+{
+    if (!s_hud || s_hud->IsForceHidden()) return TFALSE;
+    return CoopMiniHud::ShowsMatchStatus(s_state.phase, s_hudText[0] != 0, s_hud->GetMask(), [] {
+        return AGameStateController::GetSingleton()->GetCurrentState()->GetHUDMask();
+    });
 }
 void ACoopMinigame::OpenMenu() { AGameStateController::GetSingleton()->PushState(new MiniMenu()); }
 void ACoopMinigame::RequestInvite(TINT game)

@@ -6,7 +6,7 @@ set(OPENBARNYARD_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../../../OpenBarnyard/Sourc
     CACHE PATH "OpenBarnyard engine source directory")
 
 foreach(test IN ITEMS view_cadence darts_view_input golf_ground chicken_motion minigame_names
-    input_delivery mud_local_input pool_local_shot whack_input)
+    input_delivery mud_local_input mud_avatar pool_local_shot whack_input minigame_hud_status)
     add_executable(${test} ${test}.cpp)
     target_include_directories(${test} PRIVATE "${OPENBARNYARD_SOURCE}")
     target_compile_features(${test} PRIVATE cxx_std_17)

@@ -9,6 +9,7 @@ class ACoopMinigame
 public:
     static TBOOL CanInvite();
     static TBOOL IsPlaying();
+    static TBOOL ShowsHudStatus();
     static void OpenMenu();
     static void RequestInvite(TINT a_iGame);
     static void RequestLeave();

@@ -14,6 +14,7 @@
 #include "Helpers/ABikeManager.h"
 #include "Helpers/AGameLoader.h"
 #include "Helpers/ASkinLightingManager.h"
+#include "MiniGame/AGateCrashAvatar.h"
 #include "Render/ARenderer.h"
 #include "Render/ASkinShader/ASkinShader.h"
 #include "Render/ASkinShader/ASkinMaterial.h"
@@ -462,13 +463,7 @@ static void HideRenderCallback( TModelInstance* a_pInstance, void* a_pUserData )
 	TModelLOD& rLOD = a_pInstance->GetModel()->GetLOD( a_pInstance->GetLOD() );
 
 	if ( pLook->pSwapMaterial )
-	{
-		for ( TINT i = 0; i < rLOD.iNumMeshes; i++ )
-		{
-			if ( rLOD.ppMeshes[ i ]->GetMaterial() == pLook->pOriginalMaterial )
-				rLOD.ppMeshes[ i ]->SetMaterial( pLook->pSwapMaterial );
-		}
-	}
+		MudAvatar::ReplaceMaterial( rLOD.ppMeshes, rLOD.iNumMeshes, pLook->pOriginalMaterial, pLook->pSwapMaterial );
 
 	// The meshes are queued on their material now, the swap one is drawn with its own textures
 	if ( pLook->fnOrigRenderCb )
@@ -477,13 +472,7 @@ static void HideRenderCallback( TModelInstance* a_pInstance, void* a_pUserData )
 		AModelInstance::RenderInstanceCallback( a_pInstance, pLook->pModelInstance );
 
 	if ( pLook->pSwapMaterial )
-	{
-		for ( TINT i = 0; i < rLOD.iNumMeshes; i++ )
-		{
-			if ( rLOD.ppMeshes[ i ]->GetMaterial() == pLook->pSwapMaterial )
-				rLOD.ppMeshes[ i ]->SetMaterial( pLook->pOriginalMaterial );
-		}
-	}
+		MudAvatar::ReplaceMaterial( rLOD.ppMeshes, rLOD.iNumMeshes, pLook->pSwapMaterial, pLook->pOriginalMaterial );
 }
 
 static void HookCow( CowLook& a_rLook )
@@ -823,6 +812,14 @@ struct RemoteLook
 
 static RemoteLook s_oRemoteLook;
 
+TBOOL ASkins::GetRemoteCowAppearance( TINT& a_rGender, TINT& a_rBreed )
+{
+	if ( !s_oRemoteLook.bKnown || !ACoopNet::IsConnected() ) return TFALSE;
+	a_rGender = s_oRemoteLook.iGender;
+	a_rBreed = s_oRemoteLook.iBreed;
+	return TTRUE;
+}
+
 // The gender of the model GetRemoteModelIndex gave last
 static TINT s_iSpawnGender = APlayerProfile::GENDER_MALE;
 
@@ -837,8 +834,8 @@ static ASkinMaterial* FindSkinMaterial( TModel* a_pModel, const TCHAR* a_szName 
 		{
 			TMaterial* pMaterial = rLOD.ppMeshes[ i ]->GetMaterial();
 
-			if ( pMaterial && pMaterial->GetTextureNum() != 0 && pMaterial->GetClass()->IsA( &TGetClass( ASkinMaterial ) ) &&
-			     TStringManager::String8CompareNoCase( pMaterial->GetName(), a_szName ) == 0 )
+			if ( pMaterial && MudAvatar::BodyMesh( a_szName, pMaterial->GetName(),
+			         pMaterial->GetClass()->IsA( &TGetClass( ASkinMaterial ) ), pMaterial->GetTextureNum() != 0 ) )
 				return TSTATICCAST( ASkinMaterial, pMaterial );
 		}
 	}
@@ -846,39 +843,12 @@ static ASkinMaterial* FindSkinMaterial( TModel* a_pModel, const TCHAR* a_szName 
 	return TNULL;
 }
 
-// Shows the hide of a_iBreed on the remote cow (the one of its model's type: the male hides go on the male model)
-static void ShowHide( TINT a_iBreed )
+// Only the meshes queued for this instance see the clone. Other units can share the original.
+static TBOOL SetInstanceHide( CowLook& rCow, AAnimatableObject* pObject, TINT a_iBreed, TTexture* pTexture )
 {
-	CowLook& rCow = s_oRemoteCow;
-
-	if ( !rCow.pUnit || !IsBreed( a_iBreed ) )
-		return;
-
-	// Tried once per breed: what fails now fails next frame too
-	rCow.iBreed = a_iBreed;
-
-	AAnimatableObject*     pObject = TSTATICCAST( AAnimatedUnit, rCow.pUnit )->GetAnimatableObject();
-	AAnimatableObjectType* pType   = pObject ? pObject->GetObjectType() : TNULL;
-
-	const TCHAR* szMaterial = pType ? pType->GetMaterialName() : TNULL;
-	const TCHAR* szTexture  = pType ? pType->GetSkinTexture( a_iBreed ) : TNULL;
-	TTexture*    pTexture   = szTexture ? AMaterialLibraryManager::GetSingleton()->FindTexture( szTexture ) : TNULL;
-
-	if ( !szMaterial || !pTexture )
-	{
-		TERROR( "[skins] the other player's cow can't show the %s hide (%s isn't loaded)\n", s_aBreedNames[ a_iBreed ], szTexture ? szTexture : "no texture" );
-		return;
-	}
-
-	// The model of the other gender: no cow of this game uses its materials, they're set as the game sets a cow's.
-	// ApplyMaterial also gives the other skin materials of the model their lighting, which nothing did before
-	if ( rCow.iGender != APlayerProfileManager::GetSingleton()->GetMainGender() )
-	{
-		const TBOOL bApplied = TSTATICCAST( AAnimatedUnit, rCow.pUnit )->ApplyMaterial( a_iBreed, TTRUE );
-		TINFO( "[skins] the other player's cow shows the %s %s hide (%s, on its own model%s)\n", s_aGenderNames[ rCow.iGender ], s_aBreedNames[ a_iBreed ], szTexture, bApplied ? "" : ", not applied" );
-		return;
-	}
-
+	AAnimatableObjectType* pType = pObject->GetObjectType();
+	const TCHAR* szMaterial = pType->GetMaterialName();
+	if ( !szMaterial || !pTexture ) return TFALSE;
 	if ( !rCow.pSwapMaterial )
 	{
 		AModelInstance* pModelInstance = pObject->GetModelInstance().Get();
@@ -887,8 +857,8 @@ static void ShowHide( TINT a_iBreed )
 
 		if ( !pOriginal )
 		{
-			TERROR( "[skins] the model of the other player's cow has no material %s\n", szMaterial );
-			return;
+			TERROR( "[skins] cow model has no textured skin material %s\n", szMaterial );
+			return TFALSE;
 		}
 
 		// Drawn like the original: the same blending and flags, another hide and its lighting
@@ -920,7 +890,75 @@ static void ShowHide( TINT a_iBreed )
 		rCow.pSwapMaterial->SetTextureNum( 5 );
 	}
 
-	TINFO( "[skins] the other player's cow shows the %s %s hide (%s, light %s: %s)\n", s_aGenderNames[ rCow.iGender ], s_aBreedNames[ a_iBreed ], szTexture, szSkinLight ? szSkinLight : "none", pLight && pLight->szTex2 ? pLight->szTex2 : "-" );
+	return TTRUE;
+}
+
+static void ShowHide( TINT a_iBreed )
+{
+	CowLook& rCow = s_oRemoteCow;
+	if ( !rCow.pUnit || !IsBreed( a_iBreed ) ) return;
+	rCow.iBreed = a_iBreed;
+	AAnimatableObject* pObject = TSTATICCAST( AAnimatedUnit, rCow.pUnit )->GetAnimatableObject();
+	AAnimatableObjectType* pType = pObject ? pObject->GetObjectType() : TNULL;
+	const TCHAR* szTexture = pType ? pType->GetSkinTexture( a_iBreed ) : TNULL;
+	TTexture* pTexture = szTexture ? AMaterialLibraryManager::GetSingleton()->FindTexture( szTexture ) : TNULL;
+	if ( !pTexture || !pType->GetMaterialName() )
+	{
+		TERROR( "[skins] the other player's cow can't show the %s hide (%s isn't loaded)\n", s_aBreedNames[ a_iBreed ], szTexture ? szTexture : "no texture" );
+		return;
+	}
+	const TBOOL bApplied = rCow.iGender != APlayerProfileManager::GetSingleton()->GetMainGender()
+	    ? TSTATICCAST( AAnimatedUnit, rCow.pUnit )->ApplyMaterial( a_iBreed, TTRUE )
+	    : SetInstanceHide( rCow, pObject, a_iBreed, pTexture );
+	TINFO( "[skins] the other player's cow shows the %s %s hide (%s%s)\n", s_aGenderNames[ rCow.iGender ], s_aBreedNames[ a_iBreed ], szTexture, bApplied ? "" : ", not applied" );
+}
+
+static CowLook s_aMudCows[2];
+static TBOOL s_abMudHideRefs[ASkins::NUM_GENDERS][ASkins::NUM_BREEDS];
+
+TBOOL ASkins::ApplyMudHide( TINT slot, AUnit* unit, TINT gender, TINT breed )
+{
+	if ( slot < 0 || slot > 1 || !unit || !IsGender( gender ) || !IsBreed( breed ) ) return TFALSE;
+	AAnimatableObject* object = TSTATICCAST( AAnimatedUnit, unit )->GetAnimatableObject();
+	AAnimatableObjectType* type = object ? object->GetObjectType() : TNULL;
+	const TCHAR* textureName = type ? type->GetSkinTexture( breed ) : TNULL;
+	if ( !textureName ) return TFALSE;
+
+	auto* materials = AMaterialLibraryManager::GetSingleton();
+	TTexture* texture = materials->FindTexture( textureName );
+	if ( !texture && !s_abMudHideRefs[gender][breed] )
+	{
+		TCHAR library[32];
+		GetHideLibraryName( library, sizeof( library ), gender, breed );
+		materials->LoadLibrary( TPString8( library ), AAssetLoader::GetAssetTRB( AAssetType_AssetPack ), TFALSE );
+		s_abMudHideRefs[gender][breed] = TTRUE;
+		texture = materials->FindTexture( textureName );
+	}
+	CowLook& cow = s_aMudCows[slot];
+	cow.pUnit = unit;
+	const TBOOL applied = SetInstanceHide( cow, object, breed, texture );
+	TINFO( "[mud-avatar] slot=%d gender=%d breed=%d material=%s texture=%s applied=%d\n",
+	       slot, gender, breed, type->GetMaterialName() ? type->GetMaterialName() : "-", textureName, applied );
+	return applied;
+}
+
+void ASkins::DropMudHide( TINT slot )
+{
+	DropHide( s_aMudCows[slot] );
+	s_aMudCows[slot].pUnit = TNULL;
+}
+
+void ASkins::ReleaseMudHides()
+{
+	for ( TINT gender = 0; gender < NUM_GENDERS; ++gender )
+		for ( TINT breed = 0; breed < NUM_BREEDS; ++breed )
+			if ( s_abMudHideRefs[gender][breed] )
+			{
+				TCHAR library[32];
+				GetHideLibraryName( library, sizeof( library ), gender, breed );
+				AMaterialLibraryManager::GetSingleton()->UnrefLibrary( TPString8( library ), TFALSE );
+				s_abMudHideRefs[gender][breed] = TFALSE;
+			}
 }
 
 // CHANNEL_APPEARANCE

@@ -44,6 +44,8 @@ On the farm, open the **pause menu → LAN Minigames**. Either player can invite
 | Play the same challenge on each computer and compare scores | **Tease the Mailman**, **Tease Mrs. Beady**, **Chasing Chicks**, **Vegetable Patch Defender**, **Cow Tipping**, **Milk Bar** |
 | Race on each computer and compare finish times | **Bike Race**, **Joy Ride** |
 
+When you play as the guest, you can lock both Darts aim bars, start a Pool shot or jump in Mud Jumpers while your input is still travelling to the host. The host settles shared hits and scores. [Input timing and LAN playtest results](docs/multiplayer-testing.md#lan-input-timing-in-v55-lan5)
+
 | Darts | Gopher Golf |
 | --- | --- |
 | [![Bimbo and Gyurcsany's scores above the shared dartboard during a LAN match.](docs/images/darts-lan.png)](docs/images/darts-lan.png) | [![The spectator watches the gopher surface during a match between Bimbo and Gyurcsany.](docs/images/gopher-golf.png)](docs/images/gopher-golf.png) |

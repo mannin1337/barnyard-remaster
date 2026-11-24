@@ -1,14 +1,29 @@
 # Barnyard Remaster
 
-**Two-player co-op for the original Barnyard PC game.** Share a camera on the couch, or explore the farm over LAN with a camera of your own. Take turns at the dartboard, jump into the same Mud Jumpers arena, or pick another challenge from the 14 LAN minigames. Either computer can host.
+**A DirectX 11 fan remaster of the 2006 Barnyard PC game for Windows and Linux (via Proton).** Play the original story with soft sun shadows, wind in the grass and trees, and optional HD textures built from your copy of the game. Share a camera on the couch or explore the farm from two computers. We also added two-player LAN modes to 14 of the original game's single-player minigames.
 
-[**Download the patch for Windows and Linux (Proton)**](https://github.com/mannin1337/barnyard-remaster/releases/latest) · [Install and transfer saves](RemasterTools/Patch/INSTALL.md)
+[**Download the patch**](https://github.com/mannin1337/barnyard-remaster/releases/latest) · [Install and transfer saves](RemasterTools/Patch/INSTALL.md) · [Graphics and shadows](#directx-11-shaders-and-shadows) · [Couch and LAN co-op](#play-together)
 
 ![Bimbo and Gyurcsany on the farm in LAN co-op, with their names above their cows.](docs/images/farm-lan.png)
 
+## DirectX 11, shaders and shadows
+
+- **Sunlight and local lights.** Outdoors, trees, buildings and characters cast soft-edged sun shadows. Three filtered shadow maps cover the ground from near the camera into the distance, at up to 4096 × 4096 per map. Sun shadows fade at night. The bike headlamp can cast shadows of its own, and bloom gives glowing lamps and windows a halo.
+- **Depth and atmosphere.** Choose HBAO or GTAO ambient occlusion for contact shading where surfaces meet. Sun shafts appear around the visible sun, while volumetric fog picks up sunlight and shadow. These controls are under **Options → Effects**.
+- **Wind and vegetation.** Grass tips bend in gusts, and leaf shaders add sway and flutter to foliage on the farm. Under **Options → Detail** you can change the farm's draw distance and grass density.
+- **Display and filtering.** Under **Options → Graphics** you can set the resolution, display mode, refresh rate, frame-rate cap and V-Sync. Supported hardware offers up to 8× MSAA for smoother edges and 16× anisotropic filtering for clearer ground textures at a distance. The patch includes 235 precompiled DirectX 11 shaders. [DX11 effects source](OpenBarnyard/Source/Platform/DX11/Effects) · [Shader manifest](RemasterTools/Patch/shader-hashes.json)
+
+### Optional HD textures
+
+The patch starts with the original artwork. The HD builder uses your game files to create **1,864 higher-resolution textures** in the farm's original colour palette. Grass, soil, leaves and bark get extra surface detail, and Otis gets a subtle coat texture on his neck and torso. Build the textures, switch on **Options → Graphics → HD Textures**, then restart the game. [Build the HD textures](Tools/hd/README.md)
+
+## Play the story
+
+Install the patch using your own copy of the original two-disc Barnyard PC game. On Windows, launch `Play_Barnyard.bat` and start or load your game. On desktop Linux or Steam Deck, add `OpenBarnyard/OpenBarnyard.exe` to Steam and select Proton. You can choose Xbox or PlayStation button prompts and play in English or with the optional Hungarian translation. [Installation and save transfer](RemasterTools/Patch/INSTALL.md) · [Linux and Steam Deck setup](RemasterTools/Patch/INSTALL.md#play-on-linux-with-steam-and-proton)
+
 ## Play together
 
-Install the patch using your own copy of the original 2006 two-disc PC game. For LAN, both players need the same remaster release and a connection to the same local network. On desktop Linux or a Steam Deck running SteamOS, add the Windows executable to Steam and select Proton. [Linux and Steam Deck setup](RemasterTools/Patch/INSTALL.md#play-on-linux-with-steam-and-proton)
+For LAN, both players need the same remaster release and a connection to the same local network. Either computer can host.
 
 | Your setup | How to start |
 | --- | --- |
@@ -34,7 +49,7 @@ The two screenshots in each row come from the same LAN session. On the farm, Bim
 
 ## Challenge a friend
 
-On the farm, open the **pause menu → LAN Minigames**. Either player can invite the other. Accept the invitation to start, or choose **Next page** to browse the rest of the games.
+All 14 activities below are playable solo in the original PC game. For this remaster, we built a LAN mode for each one. Depending on the game, you compete in the same arena, watch each other's turns, or compare scores and finish times. On the farm, open the **pause menu → LAN Minigames**. Either player can invite the other. Accept the invitation to start, or choose **Next page** to browse the games.
 
 | How you play | Minigames |
 | --- | --- |
@@ -52,9 +67,7 @@ When you play as the guest, you can lock both Darts aim bars, start a Pool shot 
 
 Each screenshot is a native 1920×1080 game frame with HD textures, 8× MSAA, 16× anisotropic filtering and the highest detail and shadow settings.
 
-## The PC remaster
-
-The remaster uses a DirectX 11 renderer. Choose Xbox or PlayStation button prompts, play in English or select the optional Hungarian translation, and build HD textures from your own game files. [Installation guide](RemasterTools/Patch/INSTALL.md) · [HD texture guide](Tools/hd/README.md)
+## Build and test
 
 For developers, the source includes the Win32 DX11 build scripts and the LAN regression tests. The playtest notes record how the host and guest behaved under different frame rates, latency and packet loss. [Build from source](BUILDING.md) · [Run the LAN tests](Tools/tests/netplay/README.md) · [Multiplayer playtest results](docs/multiplayer-testing.md)
 
